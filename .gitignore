@@ -1,0 +1,10 @@
+/target
+.env
+*.swp
+*.swo
+*.log
+.claude/
+.pi/
+__pycache__/
+migrate-*.sql
+backups/

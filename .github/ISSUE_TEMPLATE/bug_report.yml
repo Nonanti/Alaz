@@ -1,0 +1,59 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: ["bug"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this?
+      placeholder: |
+        1. Start the server with `cargo run -- serve`
+        2. Call `alaz_hybrid_search` with query "..."
+        3. See error...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Alaz version
+      description: Output of `alaz --version` or commit hash
+    validations:
+      required: true
+  - type: dropdown
+    id: crate
+    attributes:
+      label: Affected crate
+      options:
+        - alaz-server
+        - alaz-search
+        - alaz-intel
+        - alaz-db
+        - alaz-vector
+        - alaz-graph
+        - alaz-auth
+        - alaz-core
+        - alaz-cli
+        - Not sure
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any relevant log output
+      render: shell

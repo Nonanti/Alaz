@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Alaz Logo: Flame + Knowledge Graph -->
+  <defs>
+    <linearGradient id="flame-grad" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%" stop-color="#f97316"/>
+      <stop offset="50%" stop-color="#ef4444"/>
+      <stop offset="100%" stop-color="#dc2626"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Flame outer shape -->
+  <path d="
+    M 256 52
+    C 268 52, 285 80, 305 120
+    C 330 172, 358 220, 370 268
+    C 385 328, 376 380, 345 415
+    C 318 446, 288 462, 256 466
+    C 224 462, 194 446, 167 415
+    C 136 380, 127 328, 142 268
+    C 154 220, 182 172, 207 120
+    C 227 80, 244 52, 256 52
+    Z
+  " fill="url(#flame-grad)"/>
+
+  <!-- Inner cutout (dark) for graph area -->
+  <path d="
+    M 256 130
+    C 264 130, 276 150, 290 180
+    C 308 218, 326 256, 334 292
+    C 344 336, 338 370, 318 395
+    C 300 416, 278 428, 256 430
+    C 234 428, 212 416, 194 395
+    C 174 370, 168 336, 178 292
+    C 186 256, 204 218, 222 180
+    C 236 150, 248 130, 256 130
+    Z
+  " fill="#0f0f23"/>
+
+  <!-- Knowledge graph nodes and edges -->
+  <g stroke="#f97316" stroke-width="2.5" fill="none">
+    <!-- Hexagonal structure edges -->
+    <line x1="256" y1="240" x2="290" y2="270"/>
+    <line x1="256" y1="240" x2="222" y2="270"/>
+    <line x1="290" y1="270" x2="290" y2="330"/>
+    <line x1="222" y1="270" x2="222" y2="330"/>
+    <line x1="290" y1="330" x2="256" y2="360"/>
+    <line x1="222" y1="330" x2="256" y2="360"/>
+    <!-- Cross connections -->
+    <line x1="222" y1="270" x2="290" y2="330"/>
+    <line x1="290" y1="270" x2="222" y2="330"/>
+  </g>
+
+  <!-- Graph nodes -->
+  <g fill="#f97316">
+    <circle cx="256" cy="240" r="8"/>   <!-- top -->
+    <circle cx="290" cy="270" r="6.5"/> <!-- right-top -->
+    <circle cx="222" cy="270" r="6.5"/> <!-- left-top -->
+    <circle cx="290" cy="330" r="6.5"/> <!-- right-bottom -->
+    <circle cx="222" cy="330" r="6.5"/> <!-- left-bottom -->
+    <circle cx="256" cy="360" r="8"/>   <!-- bottom -->
+  </g>
+
+  <!-- Node inner highlights -->
+  <g fill="#0f0f23">
+    <circle cx="256" cy="240" r="3.5"/>
+    <circle cx="290" cy="270" r="3"/>
+    <circle cx="222" cy="270" r="3"/>
+    <circle cx="290" cy="330" r="3"/>
+    <circle cx="222" cy="330" r="3"/>
+    <circle cx="256" cy="360" r="3.5"/>
+  </g>
+</svg>

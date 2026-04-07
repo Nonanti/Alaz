@@ -1,0 +1,32 @@
+[package]
+name = "alaz-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "alaz"
+path = "src/main.rs"
+
+[dependencies]
+alaz-core.workspace = true
+alaz-db.workspace = true
+alaz-server.workspace = true
+alaz-intel.workspace = true
+alaz-vector.workspace = true
+alaz-auth.workspace = true
+axum.workspace = true
+clap.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+dotenvy.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+cuid2.workspace = true
+reqwest.workspace = true

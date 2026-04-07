@@ -1,0 +1,28 @@
+[package]
+name = "alaz-intel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+alaz-core.workspace = true
+alaz-db.workspace = true
+alaz-vector.workspace = true
+alaz-graph.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+cuid2.workspace = true
+sqlx.workspace = true
+rand.workspace = true
+futures.workspace = true
+scraper.workspace = true
+ego-tree.workspace = true

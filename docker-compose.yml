@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: alaz-pg
+    environment:
+      POSTGRES_USER: alaz
+      POSTGRES_PASSWORD: alaz
+      POSTGRES_DB: alaz
+    ports:
+      - "5435:5432"
+    volumes:
+      - alaz-pg-data:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: alaz-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - alaz-qdrant-data:/qdrant/storage
+
+  tei-reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:latest
+    container_name: alaz-tei
+    command: --model-id Qwen/Qwen3-Reranker-0.6B
+    ports:
+      - "8001:80"
+    volumes:
+      - alaz-tei-data:/data
+
+  colbert-server:
+    build: ./services/colbert-server
+    container_name: alaz-colbert
+    ports:
+      - "8002:80"
+    volumes:
+      - alaz-colbert-models:/root/.cache
+    restart: unless-stopped
+
+volumes:
+  alaz-pg-data:
+  alaz-qdrant-data:
+  alaz-tei-data:
+  alaz-colbert-models:
