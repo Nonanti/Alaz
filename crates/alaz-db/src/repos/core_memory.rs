@@ -79,6 +79,23 @@ impl CoreMemoryRepo {
         Ok(row)
     }
 
+    pub async fn get_many(pool: &PgPool, ids: &[String]) -> Result<Vec<CoreMemory>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let rows = sqlx::query_as::<_, CoreMemory>(
+            r#"
+            SELECT id, category, key, value, confidence, confirmations, contradictions,
+                   project_id, needs_embedding, created_at, updated_at
+            FROM core_memories WHERE id = ANY($1)
+            "#,
+        )
+        .bind(ids)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows)
+    }
+
     pub async fn delete(pool: &PgPool, id: &str) -> Result<()> {
         let result = sqlx::query("DELETE FROM core_memories WHERE id = $1")
             .bind(id)
@@ -91,6 +108,8 @@ impl CoreMemoryRepo {
         Ok(())
     }
 
+    /// List core memories. When `filter.project` is `None`, returns memories from ALL
+    /// projects and global memories. Use `list_global()` to get only global entries.
     pub async fn list(pool: &PgPool, filter: &ListCoreMemoryFilter) -> Result<Vec<CoreMemory>> {
         let limit = filter.limit.unwrap_or(50);
         let offset = filter.offset.unwrap_or(0);

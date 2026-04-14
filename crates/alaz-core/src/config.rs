@@ -7,9 +7,9 @@ pub struct AppConfig {
     pub ollama_url: String,
     pub tei_url: String,
     pub colbert_url: String,
-    pub zhipuai_api_key: String,
-    pub zhipuai_base_url: String,
-    pub zhipuai_model: String,
+    pub llm_api_key: String,
+    pub llm_base_url: String,
+    pub llm_model: String,
     pub text_embed_model: String,
     pub text_embed_dim: u64,
     pub jwt_secret: String,
@@ -30,10 +30,15 @@ impl AppConfig {
             tei_url: std::env::var("TEI_URL").unwrap_or_else(|_| "http://localhost:8001".into()),
             colbert_url: std::env::var("COLBERT_URL")
                 .unwrap_or_else(|_| "http://localhost:8002".into()),
-            zhipuai_api_key: std::env::var("ZHIPUAI_API_KEY").unwrap_or_default(),
-            zhipuai_base_url: std::env::var("ZHIPUAI_BASE_URL")
-                .unwrap_or_else(|_| "https://open.bigmodel.cn/api/paas/v4".into()),
-            zhipuai_model: std::env::var("ZHIPUAI_MODEL").unwrap_or_else(|_| "glm-4.7".into()),
+            llm_api_key: std::env::var("LLM_API_KEY")
+                .or_else(|_| std::env::var("ZHIPUAI_API_KEY"))
+                .unwrap_or_default(),
+            llm_base_url: std::env::var("LLM_BASE_URL")
+                .or_else(|_| std::env::var("ZHIPUAI_BASE_URL"))
+                .unwrap_or_else(|_| "http://localhost:11434/v1".into()),
+            llm_model: std::env::var("LLM_MODEL")
+                .or_else(|_| std::env::var("ZHIPUAI_MODEL"))
+                .unwrap_or_else(|_| "qwen3:8b".into()),
             text_embed_model: std::env::var("TEXT_EMBED_MODEL")
                 .unwrap_or_else(|_| "qwen3-embedding:8b".into()),
             text_embed_dim: std::env::var("TEXT_EMBED_DIM")
@@ -81,6 +86,12 @@ mod tests {
         unsafe {
             std::env::remove_var("DATABASE_URL");
             std::env::remove_var("JWT_SECRET");
+            std::env::remove_var("LLM_API_KEY");
+            std::env::remove_var("ZHIPUAI_API_KEY");
+            std::env::remove_var("LLM_BASE_URL");
+            std::env::remove_var("ZHIPUAI_BASE_URL");
+            std::env::remove_var("LLM_MODEL");
+            std::env::remove_var("ZHIPUAI_MODEL");
         }
     }
 

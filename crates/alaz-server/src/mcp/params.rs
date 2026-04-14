@@ -472,3 +472,296 @@ pub struct IngestParams {
     /// Source-specific metadata (url, device_id, etc.)
     pub metadata: Option<serde_json::Value>,
 }
+
+// --- Database Intelligence ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DbQueryParams {
+    /// SQL SELECT query to execute (read-only, SELECT/WITH only)
+    pub query: String,
+    /// Max rows to return (default 100, max 500)
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DbSchemaParams {
+    /// Action: "tables", "describe", "indexes", "fk"
+    pub action: Option<String>,
+    /// Table name (required for describe, indexes, fk)
+    pub table: Option<String>,
+}
+
+// --- Observability ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SystemMetricsParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LearningAnalyticsParams {
+    /// Number of recent learning runs to show
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchAnalyticsParams {
+    /// Number of days to analyze (default 7)
+    pub days: Option<i32>,
+}
+
+// --- Session Search ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SessionSearchParams {
+    /// Full-text search query across session transcripts
+    pub query: String,
+    /// Filter by project name
+    pub project: Option<String>,
+    /// Max results (default 10)
+    pub limit: Option<i64>,
+}
+
+// --- Pattern Usage ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RecordUsageParams {
+    /// Knowledge item ID
+    pub id: String,
+    /// Outcome: "success", "failure", or "partial"
+    pub outcome: String,
+    /// Optional context about how the pattern was used
+    pub context: Option<String>,
+}
+
+// --- Agentic Search ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AgenticSearchParams {
+    /// Complex search query requiring multi-hop reasoning
+    pub query: String,
+    /// Filter by project name
+    pub project: Option<String>,
+    /// Max results (default 10)
+    pub limit: Option<usize>,
+}
+
+// --- RAG Fusion Search ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RagFusionSearchParams {
+    /// Search query (will be expanded into multiple reformulations)
+    pub query: String,
+    /// Filter by project name
+    pub project: Option<String>,
+    /// Max results (default 10)
+    pub limit: Option<usize>,
+}
+
+// --- Session State ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateSessionStateParams {
+    /// Session ID to update state for
+    pub session_id: String,
+    /// Session goals
+    pub goals: Option<Vec<String>>,
+    /// Items accomplished so far
+    pub accomplished: Option<Vec<String>>,
+    /// Pending tasks remaining
+    pub pending: Option<Vec<String>>,
+    /// Summary for handing off to next session
+    pub handoff_summary: Option<String>,
+    /// Current task being worked on
+    pub current_task: Option<String>,
+    /// Files related to the current work
+    pub related_files: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetSessionStateParams {
+    /// Session ID to get state for
+    pub session_id: String,
+}
+
+// --- Work Units ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateWorkUnitParams {
+    /// Work unit name/title
+    pub name: String,
+    /// Optional description of the work unit
+    pub description: Option<String>,
+    /// Goal of this work unit
+    pub goal: Option<String>,
+    /// Project name to associate with
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListWorkUnitsParams {
+    /// Filter by project name
+    pub project: Option<String>,
+    /// Filter by status (active, completed, paused, cancelled)
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UpdateWorkUnitParams {
+    /// Work unit ID
+    pub id: String,
+    /// New status: active, completed, paused, cancelled
+    pub status: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LinkSessionWorkUnitParams {
+    /// Session ID to link
+    pub session_id: String,
+    /// Work unit ID to link to
+    pub work_unit_id: String,
+}
+
+// --- Project Health ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProjectHealthParams {
+    /// Project name (optional, omit for global)
+    pub project: Option<String>,
+}
+
+// --- Session Messages ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchMessagesParams {
+    /// Full-text search query across session messages
+    pub query: String,
+    /// Filter by session ID
+    pub session_id: Option<String>,
+    /// Filter by role (user, assistant)
+    pub role: Option<String>,
+    /// Max results (default 20)
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetMessagesParams {
+    /// Session ID to get messages from
+    pub session_id: String,
+    /// Filter by role (user, assistant)
+    pub role: Option<String>,
+    /// Max messages to return (default 50)
+    pub limit: Option<i64>,
+    /// Offset for pagination
+    pub offset: Option<i64>,
+}
+
+// --- Observability ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LogsQueryParams {
+    /// Filter by log level: trace, debug, info, warn, error
+    pub level: Option<String>,
+    /// Filter by target module prefix (e.g., "alaz_intel")
+    pub target: Option<String>,
+    /// Full-text search in message
+    pub search: Option<String>,
+    /// Look back this many seconds (default 3600)
+    pub since_secs: Option<i64>,
+    /// Max results (default 50)
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LogStatsParams {
+    /// Time window in seconds (default 3600)
+    pub since_secs: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ErrorGroupsParams {
+    /// Filter by status: unresolved, resolved, ignored
+    pub status: Option<String>,
+    /// Max groups to return (default 20)
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ErrorGroupDetailParams {
+    /// Error group ID
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ResolveErrorGroupParams {
+    /// Error group ID
+    pub id: String,
+    /// Optional resolution notes
+    pub notes: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CreateAlertRuleParams {
+    /// Alert rule name
+    pub name: String,
+    /// Description
+    pub description: Option<String>,
+    /// Condition type: error_rate, log_level_count, specific_target
+    pub condition_type: String,
+    /// Threshold — trigger when count >= this
+    pub threshold: i32,
+    /// Time window in seconds (default 300 = 5 minutes)
+    pub window_secs: Option<i32>,
+    /// Filter: log level (e.g., "error")
+    pub filter_level: Option<String>,
+    /// Filter: target module prefix
+    pub filter_target: Option<String>,
+    /// Filter: regex pattern for message
+    pub filter_pattern: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListAlertRulesParams {}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeleteAlertRuleParams {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AlertHistoryParams {
+    /// Max history entries (default 20)
+    pub limit: Option<i64>,
+}
+
+// --- Git Timeline ---
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GitTimelineParams {
+    /// Filter by project name
+    pub project: Option<String>,
+    /// Look back this many days (default 7)
+    pub days: Option<i32>,
+    /// Max commits to show (default 20)
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GitHotFilesParams {
+    /// Filter by project name
+    pub project: Option<String>,
+    /// Look back this many days (default 30)
+    pub days: Option<i32>,
+    /// Max files to show (default 20)
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GitCoupledFilesParams {
+    /// Filter by project name
+    pub project: Option<String>,
+    /// Look back this many days (default 30)
+    pub days: Option<i32>,
+    /// Minimum co-change count (default 3)
+    pub min_co_changes: Option<i64>,
+    /// Max pairs to show (default 20)
+    pub limit: Option<i64>,
+}

@@ -36,7 +36,10 @@ impl EmbeddingService {
     /// - `text_model`: Model name for embeddings (e.g. "qwen3-embedding-8b")
     pub fn new(ollama_url: &str, text_model: &str) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(90))
+                .build()
+                .unwrap_or_default(),
             ollama_url: ollama_url.trim_end_matches('/').to_string(),
             text_model: text_model.to_string(),
             breaker: CircuitBreaker::new("ollama", 5, 60),

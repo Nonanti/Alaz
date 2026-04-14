@@ -15,6 +15,36 @@ use super::LearningSummary;
 use super::dedup::SessionDedup;
 use super::extraction::AggregatedExtraction;
 
+/// Returns true if the item meets minimum quality standards.
+fn passes_quality_gate(title: &str, content: &str) -> bool {
+    if content.len() < 50 {
+        return false;
+    }
+    if title.trim() == content.trim() {
+        return false;
+    }
+    if title.len() < 5 {
+        return false;
+    }
+    true
+}
+
+fn procedure_passes_quality(title: &str, content: &str, steps: &serde_json::Value) -> bool {
+    if !passes_quality_gate(title, content) {
+        return false;
+    }
+    if let Some(arr) = steps.as_array()
+        && arr.len() < 2
+    {
+        return false;
+    }
+    true
+}
+
+fn core_memory_passes_quality(key: &str, value: &str) -> bool {
+    value.len() >= 10 && key.len() >= 3
+}
+
 /// Options controlling how extracted items are persisted.
 pub(crate) struct SaveContext<'a> {
     /// If set, creates graph edges from session to produced entities.
@@ -49,6 +79,8 @@ impl super::SessionLearner {
             duplicates_skipped: 0,
             promotions: 0,
             outcomes_recorded: 0,
+            entities_extracted: 0,
+            errors: Vec::new(),
         };
         let mut session_dedup = SessionDedup::new();
         let mut saved_episode_ids: Vec<String> = Vec::new();
@@ -57,6 +89,11 @@ impl super::SessionLearner {
 
         // --- Save patterns (as knowledge items) ---
         for pattern in &extracted.patterns {
+            if !passes_quality_gate(&pattern.title, &pattern.content) {
+                debug!(title = %pattern.title, "skipping low-quality pattern");
+                continue;
+            }
+
             if self
                 .is_duplicate_knowledge(&pattern.title, ctx.project_id, &session_dedup)
                 .await?
@@ -139,6 +176,11 @@ impl super::SessionLearner {
 
         // --- Save episodes and auto-chain them sequentially ---
         for episode in &extracted.episodes {
+            if !passes_quality_gate(&episode.title, &episode.content) {
+                debug!(title = %episode.title, "skipping low-quality episode");
+                continue;
+            }
+
             if self
                 .is_duplicate_episode(&episode.title, ctx.project_id, &session_dedup)
                 .await?
@@ -165,7 +207,11 @@ impl super::SessionLearner {
                 action: None,
                 outcome: None,
                 outcome_score: None,
-                related_files: None,
+                related_files: if episode.related_files.is_empty() {
+                    None
+                } else {
+                    Some(episode.related_files.clone())
+                },
             };
 
             match EpisodeRepo::create(&self.pool, &input, ctx.project_id).await {
@@ -208,6 +254,17 @@ impl super::SessionLearner {
 
         // --- Save procedures ---
         for procedure in &extracted.procedures {
+            let steps_json_for_check =
+                serde_json::to_value(&procedure.steps).unwrap_or(serde_json::Value::Array(vec![]));
+            if !procedure_passes_quality(
+                &procedure.title,
+                &procedure.content,
+                &steps_json_for_check,
+            ) {
+                debug!(title = %procedure.title, "skipping low-quality procedure");
+                continue;
+            }
+
             if self
                 .is_duplicate_procedure(&procedure.title, ctx.project_id, &session_dedup)
                 .await?
@@ -251,6 +308,11 @@ impl super::SessionLearner {
 
         // --- Save core memories (with key normalization via similarity check) ---
         for memory in &extracted.core_memories {
+            if !core_memory_passes_quality(&memory.key, &memory.value) {
+                debug!(key = %memory.key, "skipping low-quality core memory");
+                continue;
+            }
+
             let effective_key = match self
                 .find_existing_memory_key(&memory.category, &memory.key, ctx.project_id)
                 .await

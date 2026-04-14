@@ -67,15 +67,23 @@ impl RateLimiter {
 /// Axum middleware that enforces rate limiting per client IP.
 ///
 /// IP resolution order:
-/// 1. `CF-Connecting-IP` header (Cloudflare Tunnel real client IP)
-/// 2. `X-Forwarded-For` header (first IP in chain)
-/// 3. Fallback to 0.0.0.0 (counts as single bucket for direct connections)
+/// 1. `ConnectInfo<SocketAddr>` from Axum (real peer address — not spoofable)
+/// 2. `CF-Connecting-IP` header (only trustworthy behind Cloudflare Tunnel)
+/// 3. `X-Forwarded-For` header (only trustworthy behind a trusted reverse proxy)
+/// 4. Fallback to 0.0.0.0 (counts as single bucket for direct connections)
 pub async fn rate_limit_middleware(request: Request, next: Next) -> Response {
+    // Prefer ConnectInfo (real TCP peer) over client-settable headers
     let ip = request
-        .headers()
-        .get("cf-connecting-ip")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip())
+        .or_else(|| {
+            request
+                .headers()
+                .get("cf-connecting-ip")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|s| s.parse().ok())
+        })
         .or_else(|| {
             request
                 .headers()

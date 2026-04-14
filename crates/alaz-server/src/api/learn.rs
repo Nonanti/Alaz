@@ -8,8 +8,7 @@ use axum::{
 use serde::Deserialize;
 
 use alaz_core::models::CreateReflection;
-use alaz_db::repos::{ProjectRepo, ReflectionRepo, SessionRepo};
-use alaz_intel::SessionLearner;
+use alaz_db::repos::{LearningQueueRepo, ProjectRepo, ReflectionRepo, SessionRepo};
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -49,37 +48,40 @@ async fn trigger_learn(
         None
     };
 
-    let learner = SessionLearner::new(
-        state.pool.clone(),
-        state.llm.clone(),
-        state.embedding.clone(),
-        state.qdrant.clone(),
-    );
+    // Ensure session exists before saving transcript
+    let _ = SessionRepo::ensure_exists(&state.pool, &session_id, project_id.as_deref()).await;
 
-    let summary = learner
-        .learn_from_session(&session_id, &body.transcript, project_id.as_deref())
-        .await?;
+    // Save transcript text for FTS session search immediately
+    let message_count = body.transcript.matches("[USER]:").count()
+        + body.transcript.matches("[ASSISTANT]:").count();
+    let _ = SessionRepo::update_transcript_text(
+        &state.pool,
+        &session_id,
+        &body.transcript,
+        None,
+        message_count as i32,
+    )
+    .await;
 
-    // Record LLM calls: the learning pipeline makes at least one LLM call per saved item
-    let total_items = (summary.patterns_saved
-        + summary.episodes_saved
-        + summary.procedures_saved
-        + summary.memories_saved) as u64;
-    // At minimum 1 LLM call for extraction, plus 1 per saved item for dedup/validation
-    let llm_calls = if total_items > 0 { 1 + total_items } else { 1 };
-    for _ in 0..llm_calls {
-        state.metrics.record_llm_call();
-    }
+    // Enqueue for debounced learning instead of running pipeline directly.
+    // If the session is reopened and closed again, the newer transcript
+    // replaces this one (old request gets cancelled automatically).
+    let queue_id = LearningQueueRepo::enqueue(
+        &state.pool,
+        &session_id,
+        project_id.as_deref(),
+        &body.transcript,
+        message_count as i32,
+    )
+    .await?;
 
     let response = serde_json::json!({
         "session_id": session_id,
-        "patterns_saved": summary.patterns_saved,
-        "episodes_saved": summary.episodes_saved,
-        "procedures_saved": summary.procedures_saved,
-        "memories_saved": summary.memories_saved,
-        "outcomes_recorded": summary.outcomes_recorded,
+        "queue_id": queue_id,
+        "status": "queued",
+        "message": "Learning queued. Will process after 3-minute cooldown if session stays closed.",
     });
-    Ok((StatusCode::OK, Json(response)))
+    Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
 #[derive(Deserialize)]

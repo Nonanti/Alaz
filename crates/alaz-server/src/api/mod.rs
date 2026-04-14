@@ -35,10 +35,16 @@ use tracing::{debug, warn};
 async fn require_auth(request: Request, next: Next) -> Response {
     let headers = request.headers();
 
-    let client_ip = headers
-        .get("cf-connecting-ip")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string())
+    let client_ip = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
+        .or_else(|| {
+            headers
+                .get("cf-connecting-ip")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+        })
         .or_else(|| {
             headers
                 .get("x-forwarded-for")
@@ -171,7 +177,17 @@ async fn require_auth(request: Request, next: Next) -> Response {
             }
             Err(e) => {
                 warn!(error = %e, "device lookup failed, allowing request");
-                // Graceful degradation: if DB lookup fails, allow the request
+                // SECURITY NOTE: Graceful degradation — if DB lookup fails, allow
+                // the request but log it for audit. This is an availability-over-security
+                // tradeoff. In a stricter environment, consider fail-closed instead.
+                let _ = AuditRepo::log(
+                    &pool,
+                    Some(&owner_id),
+                    "device.lookup_failed",
+                    serde_json::json!({"fingerprint": fingerprint, "error": e.to_string()}),
+                    client_ip.as_deref(),
+                )
+                .await;
             }
         }
     }

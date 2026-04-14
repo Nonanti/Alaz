@@ -6,15 +6,15 @@ pub fn estimate_tokens(text: &str) -> u64 {
     (text.len() as u64).div_ceil(4)
 }
 
-/// Truncate a string to at most `max_chars` bytes, respecting UTF-8 character boundaries.
+/// Truncate a string to at most `max_bytes` bytes, respecting UTF-8 character boundaries.
 ///
 /// Returns a slice of the original string up to the largest valid UTF-8 boundary
-/// at or before `max_chars` bytes.
-pub fn truncate_utf8(s: &str, max_chars: usize) -> &str {
-    if s.len() <= max_chars {
+/// at or before `max_bytes` bytes. Note: this is a **byte** limit, not a character limit.
+pub fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
         return s;
     }
-    let mut end = max_chars;
+    let mut end = max_bytes;
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }

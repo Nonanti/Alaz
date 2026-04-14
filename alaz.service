@@ -1,0 +1,15 @@
+[Unit]
+Description=Alaz AI Knowledge System
+After=network.target
+
+[Service]
+Type=simple
+# Adjust paths to your deployment. %h expands to the user's home directory.
+ExecStart=%h/alaz/alaz serve
+WorkingDirectory=%h/alaz
+EnvironmentFile=%h/alaz/.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

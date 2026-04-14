@@ -464,6 +464,322 @@ impl AlazMcpServer {
     ) -> Result<String, String> {
         handlers::system::core_memory(&self.state, params).await
     }
+
+    // --- Database Intelligence ---
+
+    #[tool(
+        description = "Execute a read-only SQL query against the Alaz database. Only SELECT/WITH statements allowed. Returns results as a markdown table. Use for debugging, data exploration, and ad-hoc analysis."
+    )]
+    async fn alaz_db_query(
+        &self,
+        Parameters(params): Parameters<DbQueryParams>,
+    ) -> Result<String, String> {
+        handlers::database::db_query(&self.state, params).await
+    }
+
+    #[tool(
+        description = "Explore the Alaz database schema. Actions: 'tables' (list all), 'describe' (columns of a table), 'indexes' (indexes on a table), 'fk' (foreign keys)."
+    )]
+    async fn alaz_db_schema(
+        &self,
+        Parameters(params): Parameters<DbSchemaParams>,
+    ) -> Result<String, String> {
+        handlers::database::db_schema(&self.state, params).await
+    }
+
+    // --- Observability ---
+
+    #[tool(
+        description = "Get real-time system metrics: search count/latency, LLM calls/errors, embedding count, backfill processed, decay pruned, consolidation merged."
+    )]
+    async fn alaz_system_metrics(
+        &self,
+        Parameters(_params): Parameters<SystemMetricsParams>,
+    ) -> Result<String, String> {
+        handlers::system::metrics(&self.state).await
+    }
+
+    #[tool(
+        description = "View learning pipeline analytics: recent learning runs, extraction counts, duration, success rates."
+    )]
+    async fn alaz_learning_analytics(
+        &self,
+        Parameters(params): Parameters<LearningAnalyticsParams>,
+    ) -> Result<String, String> {
+        handlers::system::learning_analytics(&self.state, params).await
+    }
+
+    #[tool(
+        description = "View search analytics: query distribution, click-through rates, signal effectiveness over recent days."
+    )]
+    async fn alaz_search_analytics(
+        &self,
+        Parameters(params): Parameters<SearchAnalyticsParams>,
+    ) -> Result<String, String> {
+        handlers::system::search_analytics(&self.state, params).await
+    }
+
+    // --- Session Search ---
+
+    #[tool(
+        description = "Full-text search across past session transcripts. Find conversations about specific topics, decisions, or file paths from previous sessions."
+    )]
+    async fn alaz_session_search(
+        &self,
+        Parameters(params): Parameters<SessionSearchParams>,
+    ) -> Result<String, String> {
+        handlers::session::search_transcripts(&self.state, params).await
+    }
+
+    // --- Pattern Usage ---
+
+    #[tool(
+        description = "Record explicit usage of a knowledge item with outcome tracking. Call this when you used a pattern/snippet and know if it worked. Outcomes: 'success', 'failure', 'partial'. Feeds the Wilson score confidence metric."
+    )]
+    async fn alaz_record_usage(
+        &self,
+        Parameters(params): Parameters<RecordUsageParams>,
+    ) -> Result<String, String> {
+        handlers::knowledge::record_usage(&self.state, params).await
+    }
+
+    // --- Advanced Search ---
+
+    #[tool(
+        description = "Agentic multi-hop search with iterative query refinement. For complex questions that need multiple rounds of search (e.g., 'What patterns did we use when fixing the auth issue last week?'). Uses LLM to analyze intermediate results and refine the query up to 3 times."
+    )]
+    async fn alaz_agentic_search(
+        &self,
+        Parameters(params): Parameters<AgenticSearchParams>,
+    ) -> Result<String, String> {
+        handlers::search::agentic_search(&self.state, params).await
+    }
+
+    #[tool(
+        description = "RAG fusion search: expands query into 3-4 alternative phrasings, searches each independently, and fuses results via RRF for superior recall. Best for ambiguous or broad queries."
+    )]
+    async fn alaz_rag_fusion(
+        &self,
+        Parameters(params): Parameters<RagFusionSearchParams>,
+    ) -> Result<String, String> {
+        handlers::search::rag_fusion(&self.state, params).await
+    }
+
+    // --- Session State ---
+
+    #[tool(
+        description = "Update structured session state: goals, accomplished items, pending tasks, handoff summary. Call this periodically during sessions to maintain continuity."
+    )]
+    async fn alaz_update_session_state(
+        &self,
+        Parameters(params): Parameters<UpdateSessionStateParams>,
+    ) -> Result<String, String> {
+        handlers::session::update_session_state(&self.state, params).await
+    }
+
+    #[tool(
+        description = "Get the structured state of a session: goals, accomplished, pending, current task, handoff summary."
+    )]
+    async fn alaz_get_session_state(
+        &self,
+        Parameters(params): Parameters<GetSessionStateParams>,
+    ) -> Result<String, String> {
+        handlers::session::get_session_state(&self.state, params).await
+    }
+
+    // --- Work Units ---
+
+    #[tool(
+        description = "Create a work unit — a task that spans multiple sessions (e.g., 'Implement auth system'). Sessions can be linked to track cross-session progress."
+    )]
+    async fn alaz_create_work_unit(
+        &self,
+        Parameters(params): Parameters<CreateWorkUnitParams>,
+    ) -> Result<String, String> {
+        handlers::session::create_work_unit(&self.state, params).await
+    }
+
+    #[tool(
+        description = "List work units for a project, optionally filtered by status (active/completed/paused)."
+    )]
+    async fn alaz_list_work_units(
+        &self,
+        Parameters(params): Parameters<ListWorkUnitsParams>,
+    ) -> Result<String, String> {
+        handlers::session::list_work_units(&self.state, params).await
+    }
+
+    #[tool(description = "Update work unit status: active, completed, paused, cancelled.")]
+    async fn alaz_update_work_unit(
+        &self,
+        Parameters(params): Parameters<UpdateWorkUnitParams>,
+    ) -> Result<String, String> {
+        handlers::session::update_work_unit(&self.state, params).await
+    }
+
+    #[tool(description = "Link the current session to a work unit for cross-session tracking.")]
+    async fn alaz_link_session_work_unit(
+        &self,
+        Parameters(params): Parameters<LinkSessionWorkUnitParams>,
+    ) -> Result<String, String> {
+        handlers::session::link_session_work_unit(&self.state, params).await
+    }
+
+    // --- Project Health ---
+
+    #[tool(
+        description = "Comprehensive project health check across 6 dimensions: knowledge freshness, procedure health, episode coverage, core memory completeness, search effectiveness, learning pipeline health. Returns overall score 0-100% with per-dimension breakdown and recommendations."
+    )]
+    async fn alaz_project_health(
+        &self,
+        Parameters(params): Parameters<ProjectHealthParams>,
+    ) -> Result<String, String> {
+        handlers::system::project_health(&self.state, params).await
+    }
+
+    // --- Session Messages ---
+
+    #[tool(
+        description = "Full-text search across individual session messages. More granular than session_search — finds specific messages, tool calls, or decisions within sessions."
+    )]
+    async fn alaz_search_messages(
+        &self,
+        Parameters(params): Parameters<SearchMessagesParams>,
+    ) -> Result<String, String> {
+        handlers::session::search_messages(&self.state, params).await
+    }
+
+    #[tool(
+        description = "Get messages from a specific session, optionally filtered by role (user/assistant). For reviewing what happened in a session."
+    )]
+    async fn alaz_get_messages(
+        &self,
+        Parameters(params): Parameters<GetMessagesParams>,
+    ) -> Result<String, String> {
+        handlers::session::get_messages(&self.state, params).await
+    }
+
+    // --- Observability ---
+
+    #[tool(
+        description = "Query structured application logs from the database. Filter by level, target module, search text, or time window. Use for debugging and incident investigation."
+    )]
+    async fn alaz_logs_query(
+        &self,
+        Parameters(params): Parameters<LogsQueryParams>,
+    ) -> Result<String, String> {
+        handlers::observability::logs_query(&self.state, params).await
+    }
+
+    #[tool(
+        description = "Get log statistics by level for a time window. Shows count of trace/debug/info/warn/error logs."
+    )]
+    async fn alaz_logs_stats(
+        &self,
+        Parameters(params): Parameters<LogStatsParams>,
+    ) -> Result<String, String> {
+        handlers::observability::logs_stats(&self.state, params).await
+    }
+
+    #[tool(
+        description = "List error groups (Sentry-style aggregation). Shows unique errors grouped by fingerprint with event counts."
+    )]
+    async fn alaz_error_groups(
+        &self,
+        Parameters(params): Parameters<ErrorGroupsParams>,
+    ) -> Result<String, String> {
+        handlers::observability::error_groups_list(&self.state, params).await
+    }
+
+    #[tool(
+        description = "Get detailed information about a specific error group: fingerprint, first/last seen, event count, and resolution status."
+    )]
+    async fn alaz_error_group_detail(
+        &self,
+        Parameters(params): Parameters<ErrorGroupDetailParams>,
+    ) -> Result<String, String> {
+        handlers::observability::error_group_detail(&self.state, params).await
+    }
+
+    #[tool(
+        description = "Mark an error group as resolved with optional notes. Use after fixing the root cause of an error."
+    )]
+    async fn alaz_resolve_error(
+        &self,
+        Parameters(params): Parameters<ResolveErrorGroupParams>,
+    ) -> Result<String, String> {
+        handlers::observability::resolve_error_group(&self.state, params).await
+    }
+
+    #[tool(
+        description = "Create an alert rule that triggers when log patterns exceed thresholds. Condition types: error_rate, log_level_count, specific_target."
+    )]
+    async fn alaz_create_alert(
+        &self,
+        Parameters(params): Parameters<CreateAlertRuleParams>,
+    ) -> Result<String, String> {
+        handlers::observability::create_alert_rule(&self.state, params).await
+    }
+
+    #[tool(
+        description = "List all configured alert rules with their status, trigger counts, and last fire times."
+    )]
+    async fn alaz_list_alerts(
+        &self,
+        Parameters(params): Parameters<ListAlertRulesParams>,
+    ) -> Result<String, String> {
+        handlers::observability::list_alert_rules(&self.state, params).await
+    }
+
+    #[tool(description = "Delete an alert rule by ID.")]
+    async fn alaz_delete_alert(
+        &self,
+        Parameters(params): Parameters<DeleteAlertRuleParams>,
+    ) -> Result<String, String> {
+        handlers::observability::delete_alert_rule(&self.state, params).await
+    }
+
+    #[tool(
+        description = "View recent alert trigger history. Shows when alerts fired and the matched counts."
+    )]
+    async fn alaz_alert_history(
+        &self,
+        Parameters(params): Parameters<AlertHistoryParams>,
+    ) -> Result<String, String> {
+        handlers::observability::alert_history(&self.state, params).await
+    }
+
+    // --- Git Timeline ---
+
+    #[tool(
+        description = "View recent git commits as a timeline. Shows commits ingested from hook stop — what actually happened in the codebase, with author, files, and stats."
+    )]
+    async fn alaz_git_timeline(
+        &self,
+        Parameters(params): Parameters<GitTimelineParams>,
+    ) -> Result<String, String> {
+        handlers::git::git_timeline(&self.state, params).await
+    }
+
+    #[tool(
+        description = "List the most frequently changed files (hot files) from git activity. Identifies churn hotspots."
+    )]
+    async fn alaz_git_hot_files(
+        &self,
+        Parameters(params): Parameters<GitHotFilesParams>,
+    ) -> Result<String, String> {
+        handlers::git::git_hot_files(&self.state, params).await
+    }
+
+    #[tool(
+        description = "Find files that tend to change together (temporal coupling). Detects hidden dependencies between files."
+    )]
+    async fn alaz_git_coupled_files(
+        &self,
+        Parameters(params): Parameters<GitCoupledFilesParams>,
+    ) -> Result<String, String> {
+        handlers::git::git_coupled_files(&self.state, params).await
+    }
 }
 
 #[rmcp::tool_handler]

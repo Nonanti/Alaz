@@ -1,3 +1,4 @@
+pub mod agentic;
 pub mod cache;
 pub mod classifier;
 pub mod decay;

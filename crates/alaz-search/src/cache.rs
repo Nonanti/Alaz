@@ -4,13 +4,14 @@
 //! within a short window (e.g., pi extension proactive context + manual search).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use alaz_core::traits::SearchResult;
 use tokio::sync::Mutex;
 
 struct CacheEntry {
-    results: Vec<SearchResult>,
+    results: Arc<Vec<SearchResult>>,
     created_at: Instant,
 }
 
@@ -32,13 +33,20 @@ impl SearchCache {
     }
 
     /// Build a deterministic cache key from query parameters.
-    fn cache_key(query: &str, project: Option<&str>, rerank: bool, hyde: bool) -> String {
+    fn cache_key(
+        query: &str,
+        project: Option<&str>,
+        rerank: bool,
+        hyde: bool,
+        limit: usize,
+    ) -> String {
         format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}",
             query.to_lowercase().trim(),
             project.unwrap_or(""),
             rerank,
-            hyde
+            hyde,
+            limit
         )
     }
 
@@ -49,13 +57,14 @@ impl SearchCache {
         project: Option<&str>,
         rerank: bool,
         hyde: bool,
+        limit: usize,
     ) -> Option<Vec<SearchResult>> {
-        let key = Self::cache_key(query, project, rerank, hyde);
+        let key = Self::cache_key(query, project, rerank, hyde, limit);
         let mut entries = self.entries.lock().await;
 
         if let Some(entry) = entries.get(&key) {
             if entry.created_at.elapsed() < self.ttl {
-                return Some(entry.results.clone());
+                return Some((*entry.results).clone());
             }
             // Expired — remove it
             entries.remove(&key);
@@ -71,9 +80,10 @@ impl SearchCache {
         project: Option<&str>,
         rerank: bool,
         hyde: bool,
+        limit: usize,
         results: Vec<SearchResult>,
     ) {
-        let key = Self::cache_key(query, project, rerank, hyde);
+        let key = Self::cache_key(query, project, rerank, hyde, limit);
         let mut entries = self.entries.lock().await;
 
         // Evict oldest entry if at capacity (and we're inserting a new key)
@@ -90,7 +100,7 @@ impl SearchCache {
         entries.insert(
             key,
             CacheEntry {
-                results,
+                results: Arc::new(results),
                 created_at: Instant::now(),
             },
         );
@@ -123,7 +133,7 @@ mod tests {
     #[tokio::test]
     async fn cache_miss_returns_none() {
         let cache = SearchCache::new(60, 100);
-        let result = cache.get("nonexistent query", None, true, false).await;
+        let result = cache.get("nonexistent query", None, true, false, 10).await;
         assert!(result.is_none());
     }
 
@@ -141,12 +151,13 @@ mod tests {
                 Some("myproject"),
                 true,
                 false,
+                10,
                 results.clone(),
             )
             .await;
 
         let cached = cache
-            .get("test query", Some("myproject"), true, false)
+            .get("test query", Some("myproject"), true, false, 10)
             .await;
 
         assert!(cached.is_some());
@@ -161,12 +172,12 @@ mod tests {
         let cache = SearchCache::new(0, 100); // 0-second TTL = instant expiry
         let results = vec![make_result("id1", "Result 1")];
 
-        cache.put("query", None, true, false, results).await;
+        cache.put("query", None, true, false, 10, results).await;
 
         // Even a tiny sleep ensures the 0s TTL has elapsed
         tokio::time::sleep(Duration::from_millis(10)).await;
 
-        let cached = cache.get("query", None, true, false).await;
+        let cached = cache.get("query", None, true, false, 10).await;
         assert!(cached.is_none(), "expired entry should not be returned");
     }
 
@@ -175,27 +186,27 @@ mod tests {
         let cache = SearchCache::new(60, 2); // Only 2 slots
 
         cache
-            .put("query1", None, true, false, vec![make_result("a", "A")])
+            .put("query1", None, true, false, 10, vec![make_result("a", "A")])
             .await;
 
         // Small delay so query2 is definitively newer
         tokio::time::sleep(Duration::from_millis(5)).await;
 
         cache
-            .put("query2", None, true, false, vec![make_result("b", "B")])
+            .put("query2", None, true, false, 10, vec![make_result("b", "B")])
             .await;
 
         // This should evict query1 (oldest)
         cache
-            .put("query3", None, true, false, vec![make_result("c", "C")])
+            .put("query3", None, true, false, 10, vec![make_result("c", "C")])
             .await;
 
         assert!(
-            cache.get("query1", None, true, false).await.is_none(),
+            cache.get("query1", None, true, false, 10).await.is_none(),
             "oldest entry should have been evicted"
         );
-        assert!(cache.get("query2", None, true, false).await.is_some());
-        assert!(cache.get("query3", None, true, false).await.is_some());
+        assert!(cache.get("query2", None, true, false, 10).await.is_some());
+        assert!(cache.get("query3", None, true, false, 10).await.is_some());
     }
 
     #[tokio::test]
@@ -205,11 +216,21 @@ mod tests {
         let results_a = vec![make_result("a", "Result A")];
         let results_b = vec![make_result("b", "Result B")];
 
-        cache.put("query alpha", None, true, false, results_a).await;
-        cache.put("query beta", None, true, false, results_b).await;
+        cache
+            .put("query alpha", None, true, false, 10, results_a)
+            .await;
+        cache
+            .put("query beta", None, true, false, 10, results_b)
+            .await;
 
-        let cached_a = cache.get("query alpha", None, true, false).await.unwrap();
-        let cached_b = cache.get("query beta", None, true, false).await.unwrap();
+        let cached_a = cache
+            .get("query alpha", None, true, false, 10)
+            .await
+            .unwrap();
+        let cached_b = cache
+            .get("query beta", None, true, false, 10)
+            .await
+            .unwrap();
 
         assert_eq!(cached_a[0].entity_id, "a");
         assert_eq!(cached_b[0].entity_id, "b");
@@ -222,13 +243,15 @@ mod tests {
         let results_rerank = vec![make_result("r", "Reranked")];
         let results_no_rerank = vec![make_result("n", "Not reranked")];
 
-        cache.put("query", None, true, false, results_rerank).await;
         cache
-            .put("query", None, false, false, results_no_rerank)
+            .put("query", None, true, false, 10, results_rerank)
+            .await;
+        cache
+            .put("query", None, false, false, 10, results_no_rerank)
             .await;
 
-        let cached_rerank = cache.get("query", None, true, false).await.unwrap();
-        let cached_no_rerank = cache.get("query", None, false, false).await.unwrap();
+        let cached_rerank = cache.get("query", None, true, false, 10).await.unwrap();
+        let cached_no_rerank = cache.get("query", None, false, false, 10).await.unwrap();
 
         assert_eq!(cached_rerank[0].entity_id, "r");
         assert_eq!(cached_no_rerank[0].entity_id, "n");
@@ -239,10 +262,10 @@ mod tests {
         let cache = SearchCache::new(0, 100); // instant expiry
 
         cache
-            .put("q1", None, true, false, vec![make_result("1", "One")])
+            .put("q1", None, true, false, 10, vec![make_result("1", "One")])
             .await;
         cache
-            .put("q2", None, true, false, vec![make_result("2", "Two")])
+            .put("q2", None, true, false, 10, vec![make_result("2", "Two")])
             .await;
 
         tokio::time::sleep(Duration::from_millis(10)).await;

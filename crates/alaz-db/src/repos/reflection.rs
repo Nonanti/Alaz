@@ -83,6 +83,18 @@ impl ReflectionRepo {
         Ok(row)
     }
 
+    pub async fn get_many(pool: &PgPool, ids: &[String]) -> Result<Vec<Reflection>> {
+        if ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let sql = select_reflections("WHERE id = ANY($1)");
+        let rows = sqlx::query_as::<_, Reflection>(&sql)
+            .bind(ids)
+            .fetch_all(pool)
+            .await?;
+        Ok(rows)
+    }
+
     pub async fn delete(pool: &PgPool, id: &str) -> Result<()> {
         let result = sqlx::query("DELETE FROM reflections WHERE id = $1")
             .bind(id)

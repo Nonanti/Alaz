@@ -201,7 +201,7 @@ alaz_explain(query: "deployment pattern", result_id: "abc123")
 
 ```bash
 # .git/hooks/post-commit
-curl -s -X POST http://your-server:3456/api/v1/ingest/git \
+curl -s -X POST "$ALAZ_URL/api/v1/ingest/git" \
   -H "X-API-Key: $ALAZ_API_KEY" \
   -d "{\"repo\": \"$(basename $(pwd))\", \"commit\": \"$(git rev-parse HEAD)\"}"
 ```

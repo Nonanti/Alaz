@@ -10,7 +10,8 @@
   <a href="https://github.com/Nonanti/Alaz/actions"><img src="https://github.com/Nonanti/Alaz/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://github.com/Nonanti/Alaz/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License"></a>
   <img src="https://img.shields.io/badge/rust-2024_edition-orange?style=flat-square&logo=rust" alt="Rust">
-  <img src="https://img.shields.io/badge/MCP-22_tools-8A2BE2?style=flat-square" alt="MCP">
+  <img src="https://img.shields.io/badge/MCP-76_tools-8A2BE2?style=flat-square" alt="MCP">
+  <img src="https://img.shields.io/badge/version-2.0.0-success?style=flat-square" alt="Version">
   <a href="https://crates.io/crates/alaz-cli"><img src="https://img.shields.io/crates/v/alaz-cli?style=flat-square&color=e6522c" alt="crates.io"></a>
 </p>
 
@@ -32,7 +33,16 @@ AI coding assistants forget everything when a session ends. You re-explain archi
 
 **Alaz fixes this.** It hooks into your coding sessions, learns automatically from transcripts, and injects the right context when a new session starts. Your assistant remembers what you built, what broke, what worked, and why.
 
-> Single Rust binary · ~31K lines · 9 crates · 456 tests · 22 MCP tools · 6-signal hybrid search
+> Single Rust binary · ~37K lines · 9 crates · 599 tests · 76 MCP tools · 6-signal hybrid search
+
+### What's new in v2.0 — *Active Intelligence*
+
+- **Active Intelligence layer** — Alaz goes from passive store to proactive collaborator: session-start context injection, on-demand CLAUDE.md generation, smart PostToolUse hooks.
+- **Git-aware learning** — post-commit hook ingests diffs; hot-file and coupled-file analytics surface what actually changes together.
+- **Dual LLM backend** — Ollama native (`think:false` fast path) with OpenAI-compatible fallback; run fully local or mix and match.
+- **Higher-quality extraction** — minimum-quality gates, tighter extraction limits, contradiction-driven superseding with a 7-day grace period.
+- **Cross-project promotion** — patterns seen in 3+ projects auto-promote with lowered thresholds for faster cross-pollination.
+- **Implicit click tracking** — signal-weight learning feeds on real usage, no manual feedback required.
 
 <br>
 
@@ -119,7 +129,7 @@ If any backend goes down, the remaining signals still produce results. Graceful 
 | Knowledge graph | — | Yes | — | Yes · 14+ relation types |
 | Autonomous learning | — | — | — | Yes |
 | Contradiction detection | — | — | — | Yes |
-| MCP native | Plugin | — | — | Yes · 22 tools |
+| MCP native | Plugin | — | — | Yes · 76 tools |
 | Built for coding agents | — | — | — | Yes |
 | Encrypted vault | — | — | — | AES-256-GCM |
 
@@ -198,7 +208,7 @@ That's it. Your AI assistant now has persistent memory.
 
 ## MCP Tools
 
-22 tools exposed via MCP StreamableHTTP:
+76 tools exposed via MCP StreamableHTTP. Highlights below — see [`docs/API.md`](docs/API.md) for the full catalog.
 
 <details>
 <summary><strong>Knowledge Management</strong> — save, get, search, hybrid_search, list, update, delete</summary>
@@ -266,6 +276,25 @@ That's it. Your AI assistant now has persistent memory.
 | `alaz_checkpoint_save` | Save session checkpoint |
 | `alaz_checkpoint_list` | List checkpoints for a session |
 | `alaz_checkpoint_restore` | Restore latest checkpoint |
+
+</details>
+
+<details>
+<summary><strong>v2 — Active Intelligence</strong> — git, code, health, alerts, work units, observability</summary>
+
+| Tool | Description |
+|---|---|
+| `alaz_git_hot_files` | Files most frequently changed in recent commits |
+| `alaz_git_coupled_files` | Files that tend to change together |
+| `alaz_git_timeline` | Timeline of commits for a project |
+| `alaz_impact` | Blast-radius analysis for a symbol or file |
+| `alaz_project_health` | Multi-dimensional project health score |
+| `alaz_create_alert` / `alaz_list_alerts` / `alaz_alert_history` / `alaz_delete_alert` | Alert rules for code / errors / quality signals |
+| `alaz_error_groups` / `alaz_error_group_detail` / `alaz_resolve_error` | Error tracking and grouping |
+| `alaz_logs_query` / `alaz_logs_stats` | Ingested-log search and stats |
+| `alaz_create_work_unit` / `alaz_list_work_units` / `alaz_update_work_unit` / `alaz_link_session_work_unit` | Work unit tracking tied to sessions |
+| `alaz_rag_fusion` / `alaz_agentic_search` | Advanced retrieval strategies |
+| `alaz_learning_analytics` / `alaz_search_analytics` | Insight into the learning pipeline |
 
 </details>
 
@@ -341,10 +370,11 @@ Circuit breaker: 5 consecutive failures → 60s backoff per service.
 
 ## Roadmap
 
+- [x] **v2.0 — Active Intelligence** *(shipped)* — git integration, CLAUDE.md generator, dual LLM backend, smart hooks, implicit click tracking
+- [x] Ollama-only mode — dual backend with native Ollama fast path
 - [ ] Web dashboard for knowledge exploration
 - [ ] VS Code / Cursor / Windsurf extensions
 - [ ] Multi-user collaboration
-- [ ] Ollama-only mode (no external LLM API)
 - [ ] Pre-built Docker image
 - [ ] Plugin system for custom extractors
 

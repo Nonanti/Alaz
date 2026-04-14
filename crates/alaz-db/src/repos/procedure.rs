@@ -67,6 +67,11 @@ impl ProcedureRepo {
     }
 
     pub async fn delete(pool: &PgPool, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM graph_edges WHERE source_id = $1 OR target_id = $1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+
         let result = sqlx::query("DELETE FROM procedures WHERE id = $1")
             .bind(id)
             .execute(pool)

@@ -179,8 +179,13 @@ impl RaptorBuilder {
         items: &[ClusterItem],
         tree_id: &str,
     ) -> Result<Option<(usize, Vec<usize>)>> {
+        const EMBEDDING_BATCH_SIZE: usize = 50;
         let texts: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
-        let embeddings = self.embedding.embed_text(&texts).await?;
+        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(EMBEDDING_BATCH_SIZE) {
+            let batch = self.embedding.embed_text(chunk).await?;
+            embeddings.extend(batch);
+        }
 
         if embeddings.len() != items.len() {
             warn!(
@@ -357,7 +362,7 @@ impl RaptorBuilder {
             &self.pool,
             &ListKnowledgeFilter {
                 project: project_id.map(|s| s.to_string()),
-                limit: Some(500),
+                limit: Some(1000),
                 ..Default::default()
             },
         )
@@ -376,7 +381,7 @@ impl RaptorBuilder {
             &self.pool,
             &ListEpisodesFilter {
                 project: project_id.map(|s| s.to_string()),
-                limit: Some(500),
+                limit: Some(1000),
                 ..Default::default()
             },
         )
@@ -395,7 +400,7 @@ impl RaptorBuilder {
             &self.pool,
             &ListProceduresFilter {
                 project: project_id.map(|s| s.to_string()),
-                limit: Some(500),
+                limit: Some(1000),
                 ..Default::default()
             },
         )

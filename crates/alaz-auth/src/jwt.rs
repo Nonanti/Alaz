@@ -17,6 +17,9 @@ pub struct Claims {
 
 /// Issue a new HS256-signed JWT token.
 pub fn issue_token(owner_id: &str, secret: &str, expiry_hours: i64) -> Result<String> {
+    if secret.is_empty() {
+        return Err(AlazError::Auth("JWT secret must not be empty".into()));
+    }
     let now = Utc::now();
     let claims = Claims {
         sub: owner_id.to_string(),
@@ -36,6 +39,9 @@ pub fn issue_token(owner_id: &str, secret: &str, expiry_hours: i64) -> Result<St
 
 /// Verify and decode a JWT token. Returns the Claims if valid.
 pub fn verify_token(token: &str, secret: &str) -> Result<Claims> {
+    if secret.is_empty() {
+        return Err(AlazError::Auth("JWT secret must not be empty".into()));
+    }
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
 
@@ -88,10 +94,11 @@ mod tests {
     }
 
     #[test]
-    fn test_empty_secret_works() {
-        let token = issue_token("user-123", "", 24).unwrap();
-        let claims = verify_token(&token, "").unwrap();
-        assert_eq!(claims.sub, "user-123");
+    fn test_empty_secret_rejected() {
+        let result = issue_token("user-123", "", 24);
+        assert!(result.is_err(), "empty secret should be rejected");
+        let result = verify_token("some.token.here", "");
+        assert!(result.is_err(), "empty secret should be rejected");
     }
 
     #[test]

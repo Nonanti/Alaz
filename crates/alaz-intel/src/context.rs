@@ -4,10 +4,13 @@ use alaz_core::models::{
 };
 use alaz_core::{Result, estimate_tokens};
 use alaz_db::repos::{
-    CoreMemoryRepo, EpisodeRepo, KnowledgeRepo, ProcedureRepo, ReflectionRepo, SessionRepo,
+    CoreMemoryRepo, EpisodeRepo, KnowledgeRepo, LearningRunRepo, ProcedureRepo, ReflectionRepo,
+    SessionRepo,
 };
 use sqlx::PgPool;
-use tracing::debug;
+use tracing::{debug, warn};
+
+use crate::llm::LlmClient;
 
 /// Result from context building with token tracking.
 pub struct ContextResult {
@@ -184,6 +187,86 @@ impl ContextInjector {
             sections_included,
             injected_entity_ids,
         })
+    }
+
+    /// Build a compact restore summary from the last session checkpoint.
+    ///
+    /// Returns a 2-3 sentence summary of what was accomplished, what's pending,
+    /// and key context, suitable for injection at the start of a new session.
+    /// On failure, returns a simple fallback message.
+    pub async fn build_compact_restore(
+        &self,
+        pool: &PgPool,
+        llm: &LlmClient,
+        session_id: &str,
+    ) -> Result<String> {
+        // 1. Try to fetch session checkpoints
+        let checkpoint = SessionRepo::get_latest_checkpoint(pool, session_id).await;
+        let mut raw_context = String::new();
+
+        if let Ok(Some(cp)) = &checkpoint {
+            let data_str = serde_json::to_string_pretty(&cp.checkpoint_data)
+                .unwrap_or_else(|_| "{}".to_string());
+            let preview = alaz_core::truncate_utf8(&data_str, 2000);
+            raw_context.push_str(&format!(
+                "Checkpoint (saved {}):\n{}\n",
+                cp.created_at, preview
+            ));
+        }
+
+        // 2. If no checkpoint data, try the session's learning run summary
+        if raw_context.is_empty() {
+            let runs = LearningRunRepo::recent(pool, 5).await.unwrap_or_default();
+            if let Some(run) = runs
+                .iter()
+                .find(|r| r.session_id.as_deref() == Some(session_id))
+            {
+                raw_context.push_str(&format!(
+                    "Learning run: {} patterns, {} episodes, {} procedures, {} memories extracted in {}ms\n",
+                    run.patterns_extracted,
+                    run.episodes_extracted,
+                    run.procedures_extracted,
+                    run.memories_extracted,
+                    run.duration_ms,
+                ));
+            }
+        }
+
+        // 3. Also fetch the session summary if available
+        if let Ok(session) = SessionRepo::get(pool, session_id).await {
+            if let Some(ref summary) = session.summary {
+                let truncated = alaz_core::truncate_utf8(summary, 1000);
+                raw_context.push_str(&format!("Session summary: {}\n", truncated));
+            }
+            if let Some(ref status) = session.status {
+                raw_context.push_str(&format!("Session status: {}\n", status));
+            }
+        }
+
+        // 4. If we have nothing at all, return fallback
+        if raw_context.trim().is_empty() {
+            return Ok("No previous session context available.".to_string());
+        }
+
+        // 5. Ask LLM to compress into 2-3 sentences
+        let system_prompt = "You are a session context summarizer. Given information about a previous work session, produce a compact summary in 2-3 sentences (max 200 words). Focus on: what was accomplished, what's still pending, and key context needed to resume work. Be concise and actionable.";
+
+        match llm.chat(system_prompt, &raw_context, 0.3).await {
+            Ok(summary) => {
+                debug!(
+                    session_id,
+                    summary_len = summary.len(),
+                    "built compact restore summary"
+                );
+                Ok(summary)
+            }
+            Err(e) => {
+                warn!(error = %e, "compact restore LLM summarization failed, returning raw context");
+                // Fallback: return a truncated version of the raw context
+                let truncated = alaz_core::truncate_utf8(&raw_context, 500);
+                Ok(truncated.to_string())
+            }
+        }
     }
 
     // --- Private helper methods ---

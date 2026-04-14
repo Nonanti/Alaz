@@ -13,10 +13,10 @@ use std::time::Duration;
 use crate::metrics::SharedMetrics;
 use alaz_core::{Embeddable, Result};
 use alaz_db::repos::{
-    CoreMemoryRepo, EpisodeRepo, GraphRepo, KnowledgeRepo, ProcedureRepo, ReflectionRepo,
-    SearchQueryRepo,
+    CoreMemoryRepo, EpisodeRepo, GraphRepo, KnowledgeRepo, LearningQueueRepo, ProcedureRepo,
+    ReflectionRepo, SearchQueryRepo,
 };
-use alaz_intel::{ColbertService, EmbeddingService};
+use alaz_intel::{ColbertService, EmbeddingService, LlmClient};
 use alaz_vector::{ColbertOps, DenseVectorOps, QdrantManager};
 use sqlx::PgPool;
 use tracing::{debug, error, info, warn};
@@ -512,19 +512,26 @@ impl DecayableEntity {
             }
         }
 
-        // Bulk delete from DB
+        // Bulk delete from DB using collected IDs to avoid TOCTOU race
+        // (items may have been boosted between SELECT and DELETE)
         let deleted = match self {
             Self::Knowledge => {
-                sqlx::query("DELETE FROM knowledge_items WHERE utility_score < $1 AND created_at < now() - $2::interval")
-                    .bind(MEMORY_PRUNE_THRESHOLD).bind(min_age).execute(pool).await
+                sqlx::query("DELETE FROM knowledge_items WHERE id = ANY($1)")
+                    .bind(&ids)
+                    .execute(pool)
+                    .await
             }
             Self::Episode => {
-                sqlx::query("DELETE FROM episodes WHERE utility_score < $1 AND created_at < now() - $2::interval")
-                    .bind(MEMORY_PRUNE_THRESHOLD).bind(min_age).execute(pool).await
+                sqlx::query("DELETE FROM episodes WHERE id = ANY($1)")
+                    .bind(&ids)
+                    .execute(pool)
+                    .await
             }
             Self::Procedure => {
-                sqlx::query("DELETE FROM procedures WHERE utility_score < $1 AND created_at < now() - $2::interval")
-                    .bind(MEMORY_PRUNE_THRESHOLD).bind(min_age).execute(pool).await
+                sqlx::query("DELETE FROM procedures WHERE id = ANY($1)")
+                    .bind(&ids)
+                    .execute(pool)
+                    .await
             }
         };
 
@@ -535,6 +542,34 @@ impl DecayableEntity {
                 0
             }
         }
+    }
+
+    /// Hard-delete items where `superseded_by IS NOT NULL` and `updated_at` is older
+    /// than the given cutoff. Returns their IDs so Qdrant vectors can be cleaned up.
+    async fn cleanup_superseded(
+        self,
+        pool: &PgPool,
+        cutoff: &chrono::DateTime<chrono::Utc>,
+    ) -> Vec<String> {
+        let ids: Vec<String> = match self {
+            Self::Knowledge => {
+                sqlx::query_scalar(
+                    "DELETE FROM knowledge_items WHERE superseded_by IS NOT NULL AND updated_at < $1 RETURNING id"
+                ).bind(cutoff).fetch_all(pool).await
+            }
+            Self::Episode => {
+                sqlx::query_scalar(
+                    "DELETE FROM episodes WHERE superseded_by IS NOT NULL AND updated_at < $1 RETURNING id"
+                ).bind(cutoff).fetch_all(pool).await
+            }
+            Self::Procedure => {
+                sqlx::query_scalar(
+                    "DELETE FROM procedures WHERE superseded_by IS NOT NULL AND updated_at < $1 RETURNING id"
+                ).bind(cutoff).fetch_all(pool).await
+            }
+        }.unwrap_or_default();
+
+        ids
     }
 
     /// Execute an UPDATE statement with optional bind parameters.
@@ -591,7 +626,10 @@ impl DecayableEntity {
 
 /// Build an `UPDATE <table> <clause>` SQL string.
 ///
+/// # Safety invariant
 /// `table` MUST be a compile-time constant from [`DecayableEntity::table`].
+/// `clause` MUST be a compile-time string literal — never pass user input.
+/// Violating this invariant introduces SQL injection risk.
 fn concat_update(table: &str, clause: &str) -> String {
     format!("UPDATE {table} {clause}")
 }
@@ -619,8 +657,43 @@ pub async fn memory_decay_job(pool: PgPool, qdrant: Arc<QdrantManager>, metrics:
             pruned += entity.prune(&pool, &qdrant, &min_age).await;
         }
 
-        metrics.decay_pruned.fetch_add(pruned, Ordering::Relaxed);
-        info!(decayed, boosted, pruned, "memory decay: cycle complete");
+        // --- Superseded cleanup: hard delete items superseded > 7 days ago ---
+        let superseded_cutoff = chrono::Utc::now() - chrono::Duration::days(7);
+        let mut superseded_total = 0u64;
+
+        for &entity in DecayableEntity::ALL {
+            let deleted_ids = entity.cleanup_superseded(&pool, &superseded_cutoff).await;
+
+            // Clean up Qdrant vectors for deleted items
+            for id in &deleted_ids {
+                for collection in ["alaz_text", "alaz_colbert"] {
+                    let _ = DenseVectorOps::delete_point(
+                        qdrant.client(),
+                        collection,
+                        entity.entity_type(),
+                        id,
+                    )
+                    .await;
+                }
+            }
+
+            if !deleted_ids.is_empty() {
+                info!(
+                    "Cleaned {} superseded {} (>7 days)",
+                    deleted_ids.len(),
+                    entity.table()
+                );
+                superseded_total += deleted_ids.len() as u64;
+            }
+        }
+
+        metrics
+            .decay_pruned
+            .fetch_add(pruned + superseded_total, Ordering::Relaxed);
+        info!(
+            decayed,
+            boosted, pruned, superseded_total, "memory decay: cycle complete"
+        );
     }
 }
 
@@ -695,6 +768,245 @@ pub async fn consolidation_job(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Debounced learning queue job
+// ---------------------------------------------------------------------------
+
+/// Cooldown before processing a queued learn request (seconds).
+/// If a newer request arrives for the same session within this window,
+/// the old one is cancelled and the timer resets.
+const LEARNING_QUEUE_COOLDOWN_SECS: i64 = 180; // 3 minutes
+
+/// How often to check the queue for ready items.
+const LEARNING_QUEUE_POLL_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Background job: polls the learning queue every 30 seconds.
+/// Picks items that have been pending for at least 3 minutes (cooldown)
+/// with no newer request for the same session. Runs the learning pipeline
+/// and marks the item as completed.
+pub async fn learning_queue_job(
+    pool: PgPool,
+    llm: Arc<LlmClient>,
+    embedding: Arc<EmbeddingService>,
+    qdrant: Arc<QdrantManager>,
+    metrics: SharedMetrics,
+) {
+    // Fix 5: Warmup — pre-load model on startup by sending a tiny request
+    info!("learning queue: warming up LLM...");
+    match llm.chat("system", "hi", 0.0).await {
+        Ok(_) => info!("learning queue: LLM warm, model loaded"),
+        Err(e) => warn!(error = %e, "learning queue: LLM warmup failed, will retry on first job"),
+    }
+
+    let mut interval = tokio::time::interval(LEARNING_QUEUE_POLL_INTERVAL);
+
+    loop {
+        interval.tick().await;
+
+        // Try to dequeue a ready item
+        let item = match LearningQueueRepo::dequeue(&pool, LEARNING_QUEUE_COOLDOWN_SECS).await {
+            Ok(Some(item)) => item,
+            Ok(None) => continue, // Nothing ready
+            Err(e) => {
+                error!(error = %e, "learning queue: dequeue failed");
+                continue;
+            }
+        };
+
+        info!(
+            session_id = %item.session_id,
+            queue_id = %item.id,
+            transcript_len = item.transcript.len(),
+            retry = item.retry_count,
+            "learning queue: processing"
+        );
+
+        // Fix 1: Health check — verify LLM is responding before starting pipeline
+        if let Err(e) = llm.chat("system", "ping", 0.0).await {
+            warn!(
+                error = %e,
+                session_id = %item.session_id,
+                "learning queue: LLM health check failed, re-queuing"
+            );
+            let _ = LearningQueueRepo::mark_failed(&pool, &item.id).await;
+            // Wait longer before next attempt
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            continue;
+        }
+
+        let learner = alaz_intel::SessionLearner::new(
+            pool.clone(),
+            llm.clone(),
+            embedding.clone(),
+            qdrant.clone(),
+        );
+
+        match learner
+            .learn_from_session(
+                &item.session_id,
+                &item.transcript,
+                item.project_id.as_deref(),
+            )
+            .await
+        {
+            Ok(summary) => {
+                let total_items = (summary.patterns_saved
+                    + summary.episodes_saved
+                    + summary.procedures_saved
+                    + summary.memories_saved) as u64;
+
+                // If pipeline ran but extracted nothing, likely LLM was unavailable — retry
+                if total_items == 0 && item.transcript.len() > 1000 {
+                    warn!(
+                        session_id = %item.session_id,
+                        "learning queue: 0 items extracted from large transcript, re-queuing for retry"
+                    );
+                    let _ = LearningQueueRepo::mark_failed(&pool, &item.id).await;
+                    continue;
+                }
+
+                if let Err(e) = LearningQueueRepo::mark_completed(&pool, &item.id).await {
+                    error!(error = %e, "learning queue: mark_completed failed");
+                }
+                let llm_calls = if total_items > 0 { 1 + total_items } else { 1 };
+                for _ in 0..llm_calls {
+                    metrics.record_llm_call();
+                }
+
+                info!(
+                    session_id = %item.session_id,
+                    patterns = summary.patterns_saved,
+                    episodes = summary.episodes_saved,
+                    procedures = summary.procedures_saved,
+                    memories = summary.memories_saved,
+                    "learning queue: completed"
+                );
+            }
+            Err(e) => {
+                error!(
+                    session_id = %item.session_id,
+                    error = %e,
+                    "learning queue: pipeline failed, re-queuing"
+                );
+                let _ = LearningQueueRepo::mark_failed(&pool, &item.id).await;
+            }
+        }
+
+        // Cleanup old entries periodically (piggyback on processing)
+        let _ = LearningQueueRepo::cleanup(&pool).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Observability jobs
+// ---------------------------------------------------------------------------
+
+/// How often to aggregate errors into groups.
+const ERROR_AGGREGATION_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How often to evaluate alert rules.
+const ALERT_EVALUATION_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Log retention in days.
+const LOG_RETENTION_DAYS: i64 = 30;
+
+/// Background job: every 60 seconds, processes new error logs into error_groups.
+pub async fn error_aggregation_job(pool: PgPool) {
+    let mut interval = tokio::time::interval(ERROR_AGGREGATION_INTERVAL);
+    let mut cleanup_counter = 0;
+
+    loop {
+        interval.tick().await;
+
+        // Aggregate errors from last 2 minutes (with overlap for safety)
+        match alaz_db::repos::ErrorGroupRepo::aggregate_new(&pool, 120).await {
+            Ok(count) => {
+                if count > 0 {
+                    debug!(count, "error aggregation: processed errors");
+                }
+            }
+            Err(e) => {
+                eprintln!("error aggregation failed: {e}");
+            }
+        }
+
+        // Cleanup old logs every hour (60 iterations × 60s)
+        cleanup_counter += 1;
+        if cleanup_counter >= 60 {
+            cleanup_counter = 0;
+            if let Ok(deleted) =
+                alaz_db::repos::StructuredLogRepo::cleanup(&pool, LOG_RETENTION_DAYS).await
+                && deleted > 0
+            {
+                info!(deleted, days = LOG_RETENTION_DAYS, "log cleanup complete");
+            }
+        }
+    }
+}
+
+/// Background job: every 60 seconds, evaluates alert rules and fires triggers.
+pub async fn alert_evaluation_job(pool: PgPool) {
+    let mut interval = tokio::time::interval(ALERT_EVALUATION_INTERVAL);
+
+    loop {
+        interval.tick().await;
+
+        let rules = match alaz_db::repos::AlertRuleRepo::list_enabled(&pool).await {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+
+        for rule in rules {
+            // Check if rule should be evaluated (avoid re-triggering too often)
+            if let Some(last) = rule.last_triggered_at
+                && (chrono::Utc::now() - last).num_seconds() < rule.window_secs as i64
+            {
+                continue;
+            }
+
+            // Count matching logs in the window
+            let count = match alaz_db::repos::StructuredLogRepo::count_matching(
+                &pool,
+                rule.filter_level.as_deref(),
+                rule.filter_target.as_deref(),
+                rule.filter_pattern.as_deref(),
+                rule.window_secs as i64,
+            )
+            .await
+            {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+
+            if count >= rule.threshold as i64 {
+                warn!(
+                    rule = %rule.name,
+                    count,
+                    threshold = rule.threshold,
+                    "alert rule triggered"
+                );
+                let details = serde_json::json!({
+                    "rule_name": rule.name,
+                    "matched_count": count,
+                    "threshold": rule.threshold,
+                    "window_secs": rule.window_secs,
+                });
+                let _ = alaz_db::repos::AlertRuleRepo::record_trigger(
+                    &pool,
+                    &rule.id,
+                    count as i32,
+                    Some(&details),
+                )
+                .await;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Feedback aggregation job
+// ---------------------------------------------------------------------------
 
 /// Background job: every 12 hours, aggregates search feedback (click-through rates)
 /// and updates feedback_boost on entities.

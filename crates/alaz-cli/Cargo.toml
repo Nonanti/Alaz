@@ -2,11 +2,6 @@
 name = "alaz-cli"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
-description.workspace = true
-repository.workspace = true
-keywords.workspace = true
-categories.workspace = true
 
 [[bin]]
 name = "alaz"
@@ -29,4 +24,6 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 cuid2.workspace = true
+chrono.workspace = true
 reqwest.workspace = true
+sqlx.workspace = true

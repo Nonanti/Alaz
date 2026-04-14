@@ -72,8 +72,20 @@ impl ColbertOps {
             ));
         }
 
+        const MAX_COLBERT_TOKENS: usize = 512;
+        let token_embeddings = if token_embeddings.len() > MAX_COLBERT_TOKENS {
+            tracing::debug!(
+                original = token_embeddings.len(),
+                truncated_to = MAX_COLBERT_TOKENS,
+                "truncating ColBERT token list"
+            );
+            &token_embeddings[..MAX_COLBERT_TOKENS]
+        } else {
+            &token_embeddings
+        };
+
         let pid = point_id(entity_type, entity_id);
-        let avg = average_embedding(&token_embeddings);
+        let avg = average_embedding(token_embeddings);
 
         // Serialize token embeddings as JSON for payload storage
         let tokens_json = serde_json::to_string(&token_embeddings)

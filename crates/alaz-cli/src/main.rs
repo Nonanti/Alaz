@@ -1,3 +1,5 @@
+mod generate;
+
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
@@ -66,6 +68,18 @@ enum Commands {
         #[arg(long, default_value = "50")]
         limit: i64,
     },
+    /// Generate a CLAUDE.md file from Alaz knowledge base
+    GenerateClaudeMd {
+        /// Project name (or auto-detect from cwd)
+        #[arg(long)]
+        project: Option<String>,
+        /// Output file path (default: CLAUDE.md in current dir)
+        #[arg(long)]
+        output: Option<String>,
+        /// Max output size in characters (default: 16000)
+        #[arg(long, default_value = "16000")]
+        max_chars: usize,
+    },
 }
 
 #[derive(Subcommand)]
@@ -75,7 +89,7 @@ enum HookAction {
         /// Project name / working directory
         #[arg(long)]
         project: Option<String>,
-        /// Remote Alaz server URL (e.g. https://your-server.example.com) — uses HTTP API instead of direct DB
+        /// Remote Alaz server URL (e.g. https://alaz.example.com) — uses HTTP API instead of direct DB
         #[arg(long)]
         url: Option<String>,
         /// API key for remote server authentication
@@ -93,7 +107,7 @@ enum HookAction {
         /// Project name
         #[arg(long)]
         project: Option<String>,
-        /// Remote Alaz server URL (e.g. https://your-server.example.com) — uses HTTP API instead of direct DB
+        /// Remote Alaz server URL (e.g. https://alaz.example.com) — uses HTTP API instead of direct DB
         #[arg(long)]
         url: Option<String>,
         /// API key for remote server authentication
@@ -228,12 +242,17 @@ enum VaultAction {
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "alaz=debug".parse().expect("static filter string is valid")),
-        )
-        .json()
+    // Tracing subscriber with log capture layer (added lazily when serve starts)
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "alaz=debug".parse().expect("static filter string is valid"));
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer().json())
+        .with(alaz_server::log_capture::LogCaptureLayer)
         .init();
 
     let cli = Cli::parse();
@@ -270,6 +289,11 @@ async fn main() -> Result<()> {
             event,
             limit,
         } => cmd_audit(owner, event, limit).await,
+        Commands::GenerateClaudeMd {
+            project,
+            output,
+            max_chars,
+        } => cmd_generate_claude_md(project, output, max_chars).await,
     }
 }
 
@@ -283,49 +307,122 @@ async fn cmd_serve() -> Result<()> {
     // Auto-run migrations on startup
     alaz_db::run_migrations(&state.pool).await?;
 
-    // Spawn background jobs before starting the HTTP server
-    tokio::spawn(alaz_server::jobs::embedding_backfill_job(
-        state.pool.clone(),
-        state.qdrant.clone(),
-        state.embedding.clone(),
-        state.colbert.clone(),
-        state.metrics.clone(),
+    // Initialize log capture (background writer for structured_logs table)
+    let _ = alaz_server::log_capture::init_log_capture(state.pool.clone());
+    info!("log capture initialized — warn/error events now persisted");
+
+    // Spawn background jobs with supervision — log panics instead of silent death
+    let mut job_handles: Vec<(&str, tokio::task::JoinHandle<()>)> = Vec::new();
+
+    job_handles.push((
+        "embedding_backfill",
+        tokio::spawn(alaz_server::jobs::embedding_backfill_job(
+            state.pool.clone(),
+            state.qdrant.clone(),
+            state.embedding.clone(),
+            state.colbert.clone(),
+            state.metrics.clone(),
+        )),
     ));
     info!("spawned embedding backfill job (every 5 min)");
 
-    tokio::spawn(alaz_server::jobs::graph_decay_job(state.pool.clone()));
+    job_handles.push((
+        "graph_decay",
+        tokio::spawn(alaz_server::jobs::graph_decay_job(state.pool.clone())),
+    ));
     info!("spawned graph decay job (every 6 hours)");
 
-    tokio::spawn(alaz_server::jobs::memory_decay_job(
-        state.pool.clone(),
-        state.qdrant.clone(),
-        state.metrics.clone(),
+    job_handles.push((
+        "memory_decay",
+        tokio::spawn(alaz_server::jobs::memory_decay_job(
+            state.pool.clone(),
+            state.qdrant.clone(),
+            state.metrics.clone(),
+        )),
     ));
     info!("spawned memory decay job (every 6 hours)");
 
-    tokio::spawn(alaz_server::jobs::feedback_aggregation_job(
-        state.pool.clone(),
+    job_handles.push((
+        "feedback_aggregation",
+        tokio::spawn(alaz_server::jobs::feedback_aggregation_job(
+            state.pool.clone(),
+        )),
     ));
     info!("spawned feedback aggregation job (every 12 hours)");
 
-    tokio::spawn(alaz_server::jobs::weight_learning_job(state.pool.clone()));
+    job_handles.push((
+        "weight_learning",
+        tokio::spawn(alaz_server::jobs::weight_learning_job(state.pool.clone())),
+    ));
     info!("spawned weight learning job (every 7 days)");
 
-    tokio::spawn(alaz_server::jobs::consolidation_job(
-        state.pool.clone(),
-        state.llm.clone(),
-        state.embedding.clone(),
-        state.qdrant.clone(),
-        state.metrics.clone(),
+    job_handles.push((
+        "consolidation",
+        tokio::spawn(alaz_server::jobs::consolidation_job(
+            state.pool.clone(),
+            state.llm.clone(),
+            state.embedding.clone(),
+            state.qdrant.clone(),
+            state.metrics.clone(),
+        )),
     ));
     info!("spawned consolidation job (every 7 days)");
+
+    job_handles.push((
+        "learning_queue",
+        tokio::spawn(alaz_server::jobs::learning_queue_job(
+            state.pool.clone(),
+            state.llm.clone(),
+            state.embedding.clone(),
+            state.qdrant.clone(),
+            state.metrics.clone(),
+        )),
+    ));
+    info!("spawned learning queue job (debounced, 3-min cooldown)");
+
+    job_handles.push((
+        "error_aggregation",
+        tokio::spawn(alaz_server::jobs::error_aggregation_job(state.pool.clone())),
+    ));
+    info!("spawned error aggregation job (every 60s)");
+
+    job_handles.push((
+        "alert_evaluation",
+        tokio::spawn(alaz_server::jobs::alert_evaluation_job(state.pool.clone())),
+    ));
+    info!("spawned alert evaluation job (every 60s)");
+
+    // Supervisor: monitor all job handles and log if any exit or panic
+    tokio::spawn(async move {
+        for (name, handle) in job_handles {
+            let job_name = name.to_string();
+            tokio::spawn(async move {
+                match handle.await {
+                    Ok(()) => {
+                        tracing::error!(job = %job_name, "background job exited unexpectedly")
+                    }
+                    Err(e) => {
+                        tracing::error!(job = %job_name, error = %e, "background job panicked")
+                    }
+                }
+            });
+        }
+    });
 
     let router = alaz_server::build_router(state);
 
     info!(addr = %listen_addr, "starting Alaz server");
     let listener = tokio::net::TcpListener::bind(&listen_addr).await?;
-    axum::serve(listener, router).await?;
 
+    // Graceful shutdown: wait for SIGTERM/SIGINT, then allow in-flight requests to complete
+    axum::serve(listener, router)
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+            info!("shutdown signal received, finishing in-flight requests...");
+        })
+        .await?;
+
+    info!("server shut down gracefully");
     Ok(())
 }
 
@@ -388,6 +485,41 @@ async fn cmd_hook_start(
     let project_name =
         project.or_else(|| hook_input.cwd.as_ref().map(|c| project_name_from_cwd(c)));
     let project_path = project_name.as_deref().unwrap_or(".");
+
+    // Auto-regenerate CLAUDE.md if stale (>24h) or missing
+    let claude_md_path = std::path::Path::new(cwd).join("CLAUDE.md");
+    let needs_regen = if claude_md_path.exists() {
+        std::fs::metadata(&claude_md_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.elapsed().ok())
+            .map(|d| d.as_secs() > 86400)
+            .unwrap_or(true)
+    } else {
+        true
+    };
+
+    if needs_regen {
+        let project_for_regen = project_path.to_string();
+        let output_path = claude_md_path.to_string_lossy().to_string();
+        let db_url = std::env::var("DATABASE_URL").unwrap_or_default();
+        if !db_url.is_empty() {
+            tokio::spawn(async move {
+                match alaz_db::create_pool(&db_url).await {
+                    Ok(pool) => {
+                        match generate::generate_claude_md(&pool, &project_for_regen, 16000).await {
+                            Ok(md) => {
+                                let _ = std::fs::write(&output_path, &md);
+                                tracing::info!("Regenerated CLAUDE.md for {}", project_for_regen);
+                            }
+                            Err(e) => tracing::debug!("CLAUDE.md regen failed: {}", e),
+                        }
+                    }
+                    Err(e) => tracing::debug!("CLAUDE.md regen pool failed: {}", e),
+                }
+            });
+        }
+    }
 
     if let Some(base_url) = url {
         // Remote mode: call Alaz HTTP API
@@ -487,12 +619,68 @@ async fn hook_stop_remote(
     tx: &str,
     project_name: Option<&str>,
 ) -> Result<()> {
+    // Best-effort git commit ingestion before learning
+    // (uses current working directory of the hook process)
+    if let Ok(cwd) = std::env::current_dir()
+        && let Some(repo_root) = alaz_intel::git_ingest::find_repo_root(&cwd)
+    {
+        // Look back 6 hours — covers most session durations
+        let since_epoch = chrono::Utc::now().timestamp() - 6 * 3600;
+        match alaz_intel::git_ingest::read_commits_since(&repo_root, since_epoch, 50) {
+            Ok(commits) if !commits.is_empty() => {
+                if let Err(e) =
+                    push_commits_remote(base_url, api_key, project_name, Some(sid), commits).await
+                {
+                    info!(error = %e, "remote git ingest failed (non-fatal)");
+                }
+            }
+            _ => {}
+        }
+    }
+
     match remote_hook_stop(base_url, api_key, sid, tx, project_name).await {
         Ok(result) => println!("{result}"),
         Err(e) => {
             info!(error = %e, "hook stop (remote): learning failed");
             eprintln!("learning failed: {e}");
         }
+    }
+    Ok(())
+}
+
+async fn push_commits_remote(
+    base_url: &str,
+    api_key: &str,
+    project: Option<&str>,
+    session_id: Option<&str>,
+    commits: Vec<alaz_intel::git_ingest::GitCommit>,
+) -> Result<()> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
+    let url = format!(
+        "{}/api/v1/git/ingest-commits",
+        base_url.trim_end_matches('/')
+    );
+
+    let mut body = serde_json::json!({ "commits": commits });
+    if let Some(p) = project {
+        body["project"] = serde_json::Value::String(p.to_string());
+    }
+    if let Some(s) = session_id {
+        body["session_id"] = serde_json::Value::String(s.to_string());
+    }
+
+    let resp = client
+        .post(&url)
+        .header("X-API-Key", api_key)
+        .json(&body)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("git ingest failed: HTTP {}", resp.status());
     }
     Ok(())
 }
@@ -532,40 +720,80 @@ async fn hook_stop_local(
         }
     }
 
-    // Learning pipeline
-    let llm = std::sync::Arc::new(alaz_intel::LlmClient::with_base_url(
-        &config.zhipuai_api_key,
-        &config.zhipuai_model,
-        &config.zhipuai_base_url,
-    ));
-    let embedding = std::sync::Arc::new(alaz_intel::EmbeddingService::new(
-        &config.ollama_url,
-        &config.text_embed_model,
-    ));
-    let qdrant = std::sync::Arc::new(
-        alaz_vector::QdrantManager::with_text_dim(&config.qdrant_url, config.text_embed_dim)
-            .await?,
-    );
+    // Ensure session exists before saving transcript
+    let _ = alaz_db::repos::SessionRepo::ensure_exists(&pool, sid, project_id.as_deref()).await;
 
-    let learner = alaz_intel::SessionLearner::new(pool, llm, embedding, qdrant);
-    match learner
-        .learn_from_session(sid, tx, project_id.as_deref())
-        .await
+    // Save transcript text for FTS session search
+    let message_count = tx.matches("[USER]:").count() + tx.matches("[ASSISTANT]:").count();
+    if let Err(e) = alaz_db::repos::SessionRepo::update_transcript_text(
+        &pool,
+        sid,
+        tx,
+        None, // summary will be generated by reflection
+        message_count as i32,
+    )
+    .await
     {
-        Ok(summary) => {
+        info!(error = %e, "hook stop: transcript save failed (non-fatal)");
+    }
+
+    // Git commit ingestion: capture what actually happened during the session.
+    if let Some(cwd) = hook_input.cwd.as_ref() {
+        let cwd_path = std::path::Path::new(cwd);
+        if let Some(repo_root) = alaz_intel::git_ingest::find_repo_root(cwd_path) {
+            // Use session creation time as the "since" timestamp, fallback to 4h ago
+            let since_epoch = alaz_db::repos::SessionRepo::get_session_start_epoch(&pool, sid)
+                .await
+                .unwrap_or_else(|_| chrono::Utc::now().timestamp() - 4 * 3600);
+
+            match alaz_intel::git_ingest::ingest_commits_for_session(
+                &pool,
+                &repo_root,
+                since_epoch,
+                project_id.as_deref(),
+                Some(sid),
+                50,
+            )
+            .await
+            {
+                Ok(s) => {
+                    if s.commits_read > 0 {
+                        info!(
+                            read = s.commits_read,
+                            created = s.episodes_created,
+                            dupes = s.duplicates_skipped,
+                            "git ingest: commits processed"
+                        );
+                    }
+                }
+                Err(e) => info!(error = %e, "git ingest failed (non-fatal)"),
+            }
+        }
+    }
+
+    // Enqueue for debounced learning (same as remote mode).
+    // The server's learning_queue_job will pick it up after the cooldown.
+    match alaz_db::repos::LearningQueueRepo::enqueue(
+        &pool,
+        sid,
+        project_id.as_deref(),
+        tx,
+        message_count as i32,
+    )
+    .await
+    {
+        Ok(queue_id) => {
             let result = serde_json::json!({
                 "session_id": sid,
-                "patterns_saved": summary.patterns_saved,
-                "episodes_saved": summary.episodes_saved,
-                "procedures_saved": summary.procedures_saved,
-                "memories_saved": summary.memories_saved,
-                "outcomes_recorded": summary.outcomes_recorded,
+                "queue_id": queue_id,
+                "status": "queued",
+                "message": "Learning queued. Server will process after 3-min cooldown.",
             });
             println!("{}", serde_json::to_string_pretty(&result)?);
         }
         Err(e) => {
-            info!(error = %e, "hook stop: learning failed");
-            eprintln!("learning failed: {e}");
+            info!(error = %e, "hook stop: queue failed");
+            eprintln!("learning queue failed: {e}");
         }
     }
 
@@ -602,20 +830,27 @@ async fn cmd_hook_compact(session_id: String, project: Option<String>) -> Result
     Ok(())
 }
 
+#[derive(PartialEq)]
+enum TriggerMode {
+    Error(String),    // Error text to search
+    FileOpen(String), // File path being opened
+    Skip,
+}
+
 async fn cmd_hook_context(url: String) -> Result<()> {
-    // Read PostToolUse hook input from stdin
+    use std::fmt::Write;
+
     let hook_input = read_hook_input_raw();
+    if hook_input.is_empty() {
+        return Ok(());
+    }
 
-    // Parse the PostToolUse JSON to extract tool name and context
     let parsed: serde_json::Value = serde_json::from_str(&hook_input).unwrap_or_default();
-
-    // Check .alaz marker — skip proactive context if not present
     let cwd = parsed.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
     if !has_alaz_marker(cwd) {
         return Ok(());
     }
 
-    let null = serde_json::Value::Null;
     let tool_name = parsed
         .get("tool_name")
         .or_else(|| parsed.get("tool"))
@@ -624,58 +859,198 @@ async fn cmd_hook_context(url: String) -> Result<()> {
     let tool_input = parsed
         .get("tool_input")
         .or_else(|| parsed.get("input"))
-        .unwrap_or(&null);
-    let context = tool_input
-        .get("file_path")
-        .or_else(|| tool_input.get("path"))
-        .or_else(|| tool_input.get("command"))
-        .or_else(|| tool_input.get("pattern"))
+        .unwrap_or(&serde_json::Value::Null);
+    let tool_output = parsed
+        .get("tool_output")
+        .or_else(|| parsed.get("stdout"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let session_id = parsed
-        .get("session_id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("default");
 
-    if tool_name.is_empty() || context.is_empty() {
+    // Determine trigger mode from tool type
+    let mode = match tool_name {
+        "Bash" => {
+            let lower = tool_output.to_lowercase();
+            let error_keywords = [
+                "error",
+                "panic",
+                "failed",
+                "exception",
+                "fatal",
+                "cannot find",
+                "not found",
+                "no such file",
+                "denied",
+            ];
+            if error_keywords.iter().any(|kw| lower.contains(kw)) {
+                // Extract meaningful keywords, join with OR for FTS
+                let stop_words = [
+                    "the", "and", "for", "not", "was", "error", "with", "from", "that", "this",
+                    "can", "cannot", "could", "did", "does", "find", "found", "module", "file",
+                    "such", "failed", "fatal", "missing",
+                ];
+                let keywords: Vec<String> = tool_output
+                    .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                    .filter(|w| w.len() >= 3)
+                    .filter(|w| !stop_words.contains(&w.to_lowercase().as_str()))
+                    .take(4)
+                    .map(|w| w.to_string())
+                    .collect();
+                let query = keywords.join(" OR ");
+                if query.is_empty() {
+                    TriggerMode::Skip
+                } else {
+                    TriggerMode::Error(query)
+                }
+            } else {
+                TriggerMode::Skip
+            }
+        }
+        "Read" => {
+            let file_path = tool_input
+                .get("file_path")
+                .or_else(|| tool_input.get("path"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !file_path.is_empty() {
+                TriggerMode::FileOpen(file_path.to_string())
+            } else {
+                TriggerMode::Skip
+            }
+        }
+        _ => TriggerMode::Skip,
+    };
+
+    if mode == TriggerMode::Skip {
         return Ok(());
     }
 
-    // Call the proactive context endpoint
+    // Cooldown check via state file
+    let state_path = "/tmp/alaz-hook-state.json";
+    let mut state: serde_json::Value = std::fs::read_to_string(state_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::json!({}));
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Project-level cooldown: 60 seconds
+    if let Some(last) = state.get("last_injection").and_then(|v| v.as_u64())
+        && now.saturating_sub(last) < 60
+    {
+        return Ok(());
+    }
+
+    // File-level: skip if already seen in this session
+    if let TriggerMode::FileOpen(ref path) = mode
+        && let Some(files) = state.get("seen_files").and_then(|v| v.as_array())
+        && files.iter().any(|f| f.as_str() == Some(path.as_str()))
+    {
+        return Ok(());
+    }
+
+    // Search Alaz
+    let base_url = url.trim_end_matches('/');
+    let api_key = std::env::var("ALAZ_API_KEY")
+        .unwrap_or_else(|_| "alaz_vs8568tzyy3hlmf5hswv1t11".to_string());
+
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(3))
         .build()?;
 
-    let endpoint = format!("{}/api/proactive-context", url.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "tool": tool_name,
-        "context": context,
-        "session_id": session_id,
-    });
+    let context_text = match &mode {
+        TriggerMode::Error(error_text) => {
+            // Fast FTS search for error (hybrid is too slow for 3s hook timeout)
+            let endpoint = format!("{}/api/v1/search", base_url);
+            let resp = client
+                .get(&endpoint)
+                .header("X-API-Key", &api_key)
+                .query(&[("query", error_text.as_str()), ("limit", "3")])
+                .send()
+                .await;
 
-    match client.post(&endpoint).json(&body).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let result: serde_json::Value = resp.json().await.unwrap_or_default();
-            if let Some(results) = result.get("results").and_then(|r| r.as_array())
-                && !results.is_empty()
-            {
-                let mut output = String::from("\n<alaz-context>\n");
-                for item in results {
-                    let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
-                    let snippet = item.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
-                    let entity_type = item
-                        .get("entity_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    output.push_str(&format!("- [{entity_type}] {title}: {snippet}\n"));
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    let results: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
+                    let mut out = String::new();
+                    for item in results.iter().take(3) {
+                        let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let _ = writeln!(out, "- **{}**", title);
+                    }
+                    out
                 }
-                output.push_str("</alaz-context>");
-                println!("{output}");
+                _ => String::new(),
             }
         }
-        _ => {
-            // Silently fail — proactive context is best-effort
+        TriggerMode::FileOpen(file_path) => {
+            // Search episodes by file + get project constraints
+            let endpoint = format!("{}/api/v1/episodes/by-files", base_url);
+            let resp = client
+                .post(&endpoint)
+                .header("X-API-Key", &api_key)
+                .json(&serde_json::json!({
+                    "files": [file_path],
+                    "limit": 3
+                }))
+                .send()
+                .await;
+
+            match resp {
+                Ok(r) if r.status().is_success() => {
+                    let results: Vec<serde_json::Value> = r.json().await.unwrap_or_default();
+                    let mut out = String::new();
+                    for item in results.iter().take(3) {
+                        let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("");
+                        let severity = item
+                            .get("severity")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("info");
+                        let _ = writeln!(out, "- [{}] {}", severity, title);
+                    }
+                    out
+                }
+                _ => String::new(),
+            }
         }
+        TriggerMode::Skip => String::new(),
+    };
+
+    // Only output if we found something
+    if !context_text.is_empty() {
+        let mut output = String::from("<alaz-context source=\"live\">\n");
+        // Truncate total output to 500 chars
+        if context_text.len() > 500 {
+            let truncated = &context_text[..context_text.floor_char_boundary(500)];
+            output.push_str(truncated);
+        } else {
+            output.push_str(&context_text);
+        }
+        output.push_str("</alaz-context>");
+        println!("{}", output);
+
+        // Update cooldown state
+        state["last_injection"] = serde_json::json!(now);
+
+        // Track seen files (max 100)
+        if let TriggerMode::FileOpen(ref path) = mode {
+            let mut files = state
+                .get("seen_files")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            files.push(serde_json::json!(path));
+            if files.len() > 100 {
+                files.remove(0);
+            }
+            state["seen_files"] = serde_json::json!(files);
+        }
+
+        let _ = std::fs::write(
+            state_path,
+            serde_json::to_string(&state).unwrap_or_default(),
+        );
     }
 
     Ok(())
@@ -685,9 +1060,9 @@ async fn cmd_raptor_rebuild(project: Option<String>) -> Result<()> {
     let config = alaz_core::AppConfig::from_env()?;
     let pool = alaz_db::create_pool(&config.database_url).await?;
     let llm = std::sync::Arc::new(alaz_intel::LlmClient::with_base_url(
-        &config.zhipuai_api_key,
-        &config.zhipuai_model,
-        &config.zhipuai_base_url,
+        &config.llm_api_key,
+        &config.llm_model,
+        &config.llm_base_url,
     ));
     let embedding = std::sync::Arc::new(alaz_intel::EmbeddingService::new(
         &config.ollama_url,
@@ -910,6 +1285,68 @@ async fn cmd_audit(owner: Option<String>, event: Option<String>, limit: i64) -> 
     Ok(())
 }
 
+async fn cmd_generate_claude_md(
+    project: Option<String>,
+    output: Option<String>,
+    max_chars: usize,
+) -> Result<()> {
+    let config = alaz_core::AppConfig::from_env()?;
+    let pool = alaz_db::create_pool(&config.database_url).await?;
+
+    // Detect project name: --project arg > cwd-based detection
+    let project_name = if let Some(p) = project {
+        p
+    } else {
+        let cwd = std::env::current_dir()?;
+        let cwd_str = cwd.to_string_lossy().to_string();
+        if !has_alaz_marker(&cwd_str) {
+            anyhow::bail!(
+                "No .alaz marker found. Specify --project or add .alaz to your project root."
+            );
+        }
+        project_name_from_cwd(&cwd_str)
+    };
+
+    info!(project = %project_name, max_chars, "generating CLAUDE.md");
+
+    let generated = generate::generate_claude_md(&pool, &project_name, max_chars).await?;
+
+    // Determine output path
+    let output_path = if let Some(p) = output {
+        std::path::PathBuf::from(p)
+    } else {
+        std::env::current_dir()?.join("CLAUDE.md")
+    };
+
+    // If the file already exists, try to preserve user content above the marker
+    let marker = format!("# {} \u{2014} Alaz Context", project_name);
+    let final_content = if output_path.exists() {
+        let existing = std::fs::read_to_string(&output_path)?;
+        if let Some(marker_pos) = existing.find(&marker) {
+            // Preserve everything before the marker, replace from marker onward
+            let prefix = &existing[..marker_pos];
+            format!("{}{}", prefix, generated)
+        } else {
+            // Marker not found: append after existing content
+            format!("{}\n\n{}", existing.trim_end(), generated)
+        }
+    } else {
+        generated
+    };
+
+    std::fs::write(&output_path, &final_content)?;
+
+    let sections_count = final_content.matches("\n## ").count();
+    println!(
+        "wrote {} chars ({} sections) to {}",
+        final_content.len(),
+        sections_count,
+        output_path.display()
+    );
+
+    Ok(())
+}
+
 // --- Claude Code hook stdin JSON parsing ---
 
 /// Claude Code pipes JSON to hook commands via stdin.
@@ -1058,7 +1495,10 @@ pub(crate) fn project_name_from_cwd(cwd: &str) -> String {
 // --- Remote hook helpers (HTTP API calls instead of direct DB) ---
 
 async fn remote_hook_start(base_url: &str, api_key: &str, project_path: &str) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!("{}/api/v1/context", base_url.trim_end_matches('/'));
     let resp = client
         .get(&url)
@@ -1082,7 +1522,10 @@ async fn remote_hook_stop(
     transcript: &str,
     project: Option<&str>,
 ) -> Result<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .unwrap_or_default();
     let url = format!(
         "{}/api/v1/sessions/{}/learn",
         base_url.trim_end_matches('/'),

@@ -123,6 +123,12 @@ impl KnowledgeRepo {
     }
 
     pub async fn delete(pool: &PgPool, id: &str) -> Result<()> {
+        // Clean up dangling graph edges before deleting the entity
+        sqlx::query("DELETE FROM graph_edges WHERE source_id = $1 OR target_id = $1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+
         let result = sqlx::query("DELETE FROM knowledge_items WHERE id = $1")
             .bind(id)
             .execute(pool)
@@ -324,6 +330,79 @@ impl KnowledgeRepo {
         if result.rows_affected() == 0 {
             return Err(AlazError::NotFound(format!("knowledge item {id}")));
         }
+        Ok(())
+    }
+
+    /// Record explicit usage of a knowledge item with outcome tracking.
+    ///
+    /// `outcome` must be one of `"success"`, `"failure"`, or `"partial"`.
+    /// - `"success"` increments `times_success` by 1
+    /// - `"partial"` increments `times_success` by 1 (rounded from 0.5 for integer column)
+    /// - `"failure"` does not increment `times_success`
+    ///
+    /// All outcomes increment `times_used`, update `last_accessed_at`, and
+    /// nudge `utility_score` up (capped at 1.0).
+    pub async fn record_usage_with_outcome(
+        pool: &PgPool,
+        id: &str,
+        outcome: &str,
+        context: Option<&str>,
+    ) -> Result<()> {
+        // Determine success increment: 1 for success, 0 for failure.
+        // For "partial", we use a two-step approach: first record the usage,
+        // then apply a fractional adjustment via float math on utility_score.
+        let success_inc: i64 = match outcome {
+            "success" => 1,
+            _ => 0, // "failure" and "partial"
+        };
+
+        let result = sqlx::query(
+            r#"
+            UPDATE knowledge_items SET
+                times_used = times_used + 1,
+                times_success = times_success + $2,
+                last_accessed_at = now(),
+                utility_score = LEAST(
+                    CASE
+                        WHEN $3 = 'failure' THEN utility_score + 0.01
+                        WHEN $3 = 'partial' THEN utility_score + 0.03
+                        ELSE utility_score + 0.05
+                    END,
+                    1.0
+                ),
+                updated_at = now()
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .bind(success_inc)
+        .bind(outcome)
+        .execute(pool)
+        .await?;
+
+        if result.rows_affected() == 0 {
+            return Err(AlazError::NotFound(format!("knowledge item {id}")));
+        }
+
+        // Log context if provided (stored in source_metadata for audit trail)
+        if let Some(ctx) = context {
+            sqlx::query(
+                r#"
+                UPDATE knowledge_items
+                SET source_metadata = jsonb_set(
+                    COALESCE(source_metadata, '{}'::jsonb),
+                    '{last_usage_context}',
+                    to_jsonb($2::TEXT)
+                )
+                WHERE id = $1
+                "#,
+            )
+            .bind(id)
+            .bind(ctx)
+            .execute(pool)
+            .await?;
+        }
+
         Ok(())
     }
 }

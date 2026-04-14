@@ -13,8 +13,10 @@ use std::sync::Arc;
 
 use alaz_core::Result;
 use alaz_core::traits::{SearchQuery, SearchResult, SignalResult};
-use alaz_db::repos::{EpisodeRepo, KnowledgeRepo, ProcedureRepo, SearchQueryRepo};
-use alaz_intel::{ColbertService, EmbeddingService, HydeGenerator};
+use alaz_db::repos::{
+    CoreMemoryRepo, EpisodeRepo, KnowledgeRepo, ProcedureRepo, ReflectionRepo, SearchQueryRepo,
+};
+use alaz_intel::{ColbertService, EmbeddingService, HydeGenerator, LlmClient};
 use alaz_vector::QdrantManager;
 use sqlx::PgPool;
 use tracing::{debug, info, warn};
@@ -42,10 +44,12 @@ impl SearchPipeline {
         let rerank = query.rerank.unwrap_or(true);
         let hyde = query.hyde.unwrap_or(false);
 
+        let limit = query.limit.unwrap_or(10);
+
         // Check cache first
         if let Some(cached) = self
             .cache
-            .get(&query.query, query.project.as_deref(), rerank, hyde)
+            .get(&query.query, query.project.as_deref(), rerank, hyde, limit)
             .await
         {
             debug!(
@@ -55,8 +59,6 @@ impl SearchPipeline {
             );
             return Ok(cached);
         }
-
-        let limit = query.limit.unwrap_or(10);
         let fetch_limit = limit * 3;
 
         // Steps 0-2: Classify query, optional HyDE, embed
@@ -78,7 +80,8 @@ impl SearchPipeline {
         for r in fts.iter().chain(text.iter()).take(10) {
             seeds.push((r.entity_type.clone(), r.entity_id.clone()));
         }
-        seeds.dedup();
+        let mut seen = std::collections::HashSet::new();
+        seeds.retain(|s| seen.insert(s.clone()));
 
         let (graph, raptor, cue) = self
             .run_secondary_signals(
@@ -145,9 +148,74 @@ impl SearchPipeline {
                 query.project.as_deref(),
                 rerank,
                 hyde,
+                limit,
                 results.clone(),
             )
             .await;
+
+        Ok(results)
+    }
+
+    // ── RAG Fusion Search ───────────────────────────────────────────
+
+    /// RAG fusion search: expand query into multiple formulations, search each,
+    /// and fuse results via RRF.
+    ///
+    /// Uses the LLM to generate 3 alternative phrasings of the original query,
+    /// runs `hybrid_search` for each (with reranking disabled for speed), then
+    /// fuses all result lists through weighted RRF with equal weights.
+    pub async fn rag_fusion_search(
+        &self,
+        query: &SearchQuery,
+        llm: &LlmClient,
+    ) -> Result<Vec<SearchResult>> {
+        // 1. Expand query into 3-4 formulations via LLM
+        let queries = expand_query(llm, &query.query).await?;
+
+        debug!(
+            original = %query.query,
+            expanded_count = queries.len(),
+            "RAG fusion: expanded queries"
+        );
+
+        // 2. Run hybrid_search for each (sequentially to avoid overwhelming the system)
+        //    Disable reranking for sub-queries (speed)
+        let mut all_signal_results: Vec<Vec<SignalResult>> = Vec::new();
+
+        for q in &queries {
+            let sub_query = SearchQuery {
+                query: q.clone(),
+                project: query.project.clone(),
+                limit: query.limit,
+                rerank: Some(false),
+                hyde: Some(false),
+                graph_expand: Some(true),
+            };
+
+            let results = self.hybrid_search(&sub_query).await.unwrap_or_default();
+
+            // Convert SearchResults back to SignalResults for RRF
+            let signals: Vec<SignalResult> = results
+                .into_iter()
+                .enumerate()
+                .map(|(rank, r)| SignalResult {
+                    entity_type: r.entity_type,
+                    entity_id: r.entity_id,
+                    rank,
+                })
+                .collect();
+
+            all_signal_results.push(signals);
+        }
+
+        // 3. Fuse all results via RRF with equal weights
+        let weights: Vec<f32> = vec![1.0; all_signal_results.len()];
+        let (fused, _) = fusion::weighted_rrf_with_explanations(all_signal_results, &weights);
+
+        // 4. Take top results and hydrate
+        let limit = query.limit.unwrap_or(10);
+        let candidates: Vec<_> = fused.into_iter().take(limit).collect();
+        let results = self.hydrate_candidates(candidates).await;
 
         Ok(results)
     }
@@ -318,21 +386,27 @@ impl SearchPipeline {
         let mut knowledge_ids: Vec<String> = Vec::new();
         let mut episode_ids: Vec<String> = Vec::new();
         let mut procedure_ids: Vec<String> = Vec::new();
+        let mut core_memory_ids: Vec<String> = Vec::new();
+        let mut reflection_ids: Vec<String> = Vec::new();
 
         for (entity_type, entity_id, _) in &candidates {
             match entity_type.as_str() {
                 "knowledge_item" | "knowledge" => knowledge_ids.push(entity_id.clone()),
                 "episode" => episode_ids.push(entity_id.clone()),
                 "procedure" => procedure_ids.push(entity_id.clone()),
+                "core_memory" => core_memory_ids.push(entity_id.clone()),
+                "reflection" => reflection_ids.push(entity_id.clone()),
                 _ => {}
             }
         }
 
-        // Batch fetch all three types concurrently
-        let (ki_result, ep_result, proc_result) = tokio::join!(
+        // Batch fetch all types concurrently
+        let (ki_result, ep_result, proc_result, cm_result, ref_result) = tokio::join!(
             KnowledgeRepo::get_many(&self.pool, &knowledge_ids),
             EpisodeRepo::get_many(&self.pool, &episode_ids),
             ProcedureRepo::get_many(&self.pool, &procedure_ids),
+            CoreMemoryRepo::get_many(&self.pool, &core_memory_ids),
+            ReflectionRepo::get_many(&self.pool, &reflection_ids),
         );
 
         let ki_map: HashMap<String, _> = ki_result
@@ -362,6 +436,24 @@ impl SearchPipeline {
             .map(|p| (p.id.clone(), p))
             .collect();
 
+        let cm_map: HashMap<String, _> = cm_result
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "batch core_memory fetch failed");
+                vec![]
+            })
+            .into_iter()
+            .map(|cm| (cm.id.clone(), cm))
+            .collect();
+
+        let ref_map: HashMap<String, _> = ref_result
+            .unwrap_or_else(|e| {
+                warn!(error = %e, "batch reflection fetch failed");
+                vec![]
+            })
+            .into_iter()
+            .map(|r| (r.id.clone(), r))
+            .collect();
+
         // Hydrate in fused-score order
         let mut results = Vec::new();
         for (entity_type, entity_id, score) in candidates {
@@ -371,11 +463,32 @@ impl SearchPipeline {
                 }
                 "episode" => hydrate_episode(&ep_map, &entity_type, &entity_id, score),
                 "procedure" => hydrate_procedure(&proc_map, &entity_type, &entity_id, score),
+                "core_memory" => cm_map.get(&entity_id).map(|cm| SearchResult {
+                    entity_type: entity_type.clone(),
+                    entity_id: entity_id.clone(),
+                    title: format!("[{}] {}", cm.category, cm.key),
+                    content: cm.value.clone(),
+                    score,
+                    project: cm.project_id.clone(),
+                    metadata: Some(serde_json::json!({
+                        "category": cm.category,
+                        "confidence": cm.confidence,
+                    })),
+                }),
+                "reflection" => ref_map.get(&entity_id).map(|r| SearchResult {
+                    entity_type: entity_type.clone(),
+                    entity_id: entity_id.clone(),
+                    title: format!("Reflection: {}", r.session_id),
+                    content: r.lessons_learned.clone().unwrap_or_default(),
+                    score,
+                    project: r.project_id.clone(),
+                    metadata: Some(serde_json::json!({
+                        "effectiveness": r.effectiveness_score,
+                        "overall": r.overall_score,
+                    })),
+                }),
                 _ => {
-                    debug!(
-                        entity_type,
-                        entity_id, "unknown entity type, cannot hydrate"
-                    );
+                    warn!(entity_type = %entity_type, entity_id = %entity_id, "unknown entity type in hydration");
                     None
                 }
             };
@@ -597,4 +710,40 @@ fn decay_and_boost(
 ) -> f64 {
     crate::decay::apply_decay(score, last_accessed_at, access_count as i32)
         + f64::from(feedback_boost) * 0.1
+}
+
+// ── Query expansion for RAG fusion ─────────────────────────────────
+
+/// Use the LLM to generate alternative phrasings of a search query.
+///
+/// Returns 3 alternative queries (plus the original) for a total of 4
+/// formulations. If the LLM call fails, falls back to just the original.
+async fn expand_query(llm: &LlmClient, query: &str) -> alaz_core::Result<Vec<String>> {
+    let system = "You are a search query expansion assistant. Given a search query, \
+        generate exactly 3 alternative phrasings that would help find relevant results. \
+        Return ONLY the 3 queries, one per line, with no numbering or extra text.";
+    let user = format!("Original query: {}", query);
+
+    let mut queries = vec![query.to_string()];
+
+    match llm.chat(system, &user, 0.3).await {
+        Ok(response) => {
+            for line in response.lines() {
+                let line = line.trim();
+                if !line.is_empty() {
+                    queries.push(line.to_string());
+                }
+            }
+            debug!(
+                original = %query,
+                expanded = queries.len() - 1,
+                "query expansion complete"
+            );
+        }
+        Err(e) => {
+            warn!(error = %e, "query expansion failed, using original query only");
+        }
+    }
+
+    Ok(queries)
 }

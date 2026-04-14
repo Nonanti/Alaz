@@ -6,6 +6,8 @@ use sqlx::{PgPool, Row};
 pub async fn create_pool(database_url: &str) -> alaz_core::Result<PgPool> {
     let pool = PgPoolOptions::new()
         .max_connections(20)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        .idle_timeout(std::time::Duration::from_secs(600))
         .connect(database_url)
         .await?;
     Ok(pool)
@@ -34,6 +36,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("016", include_str!("migrations/016_spaced_repetition.sql")),
     ("017", include_str!("migrations/017_context_tracking.sql")),
     ("018", include_str!("migrations/018_learning_analytics.sql")),
+    (
+        "019",
+        include_str!("migrations/019_search_feedback_index.sql"),
+    ),
+    ("020", include_str!("migrations/020_session_search.sql")),
+    ("021", include_str!("migrations/021_learning_queue.sql")),
+    ("022", include_str!("migrations/022_paks_features.sql")),
+    ("023", include_str!("migrations/023_observability.sql")),
 ];
 
 /// Full migration file names for display purposes.
@@ -56,6 +66,11 @@ const MIGRATION_NAMES: &[(&str, &str)] = &[
     ("016", "016_spaced_repetition.sql"),
     ("017", "017_context_tracking.sql"),
     ("018", "018_learning_analytics.sql"),
+    ("019", "019_search_feedback_index.sql"),
+    ("020", "020_session_search.sql"),
+    ("021", "021_learning_queue.sql"),
+    ("022", "022_paks_features.sql"),
+    ("023", "023_observability.sql"),
 ];
 
 /// Migration status for a single migration file.
@@ -133,12 +148,13 @@ pub async fn run_migrations(pool: &PgPool) -> alaz_core::Result<usize> {
         }
 
         tracing::info!(version, "applying migration");
-        sqlx::raw_sql(sql).execute(pool).await?;
-
+        let mut tx = pool.begin().await?;
+        sqlx::raw_sql(sql).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO _alaz_migrations (version) VALUES ($1)")
             .bind(version)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
 
         count += 1;
     }

@@ -187,12 +187,11 @@ All jobs use graceful degradation: errors are logged but don't crash the server.
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                   Production Server                  │
-│                 (your-server)                        │
+│                   Production Host                    │
 │                                                      │
 │  ┌────────────────┐  ┌─────────────────────────────┐ │
 │  │  Alaz Binary   │  │       PostgreSQL             │ │
-│  │  (Rust, :3456) │◀▶│  (:5437, alaz database)     │ │
+│  │  (Rust, :3456) │◀▶│  (:5435, alaz database)     │ │
 │  │                │  │  Tables: knowledge_items,    │ │
 │  │  REST API      │  │  episodes, procedures,      │ │
 │  │  MCP Server    │  │  core_memories, session_logs,│ │
@@ -218,26 +217,24 @@ All jobs use graceful degradation: errors are logged but don't crash the server.
 └──────────────────────────────────────────────────────┘
 
          ▲
-         │ REST/MCP (via pi extension)
+         │ REST / MCP
          │
 ┌────────┴─────────┐
 │  Developer       │
 │  Machine         │
-│  (pi + Claude)   │
+│  (Claude / MCP)  │
 └──────────────────┘
 ```
 
 ### Service Management
 
 ```bash
-# Deploy
-bash deploy.sh                                              # Build + rsync + restart
+# Deploy (set DEPLOY_HOST=user@host in your environment first)
+bash deploy.sh                                    # Build + rsync + restart
 
-# Status
-ssh your-user@your-server 'systemctl --user status alaz'
-
-# Logs
-ssh your-user@your-server 'journalctl --user -u alaz -f'
+# Status / logs over SSH
+ssh "$DEPLOY_HOST" 'systemctl --user status alaz'
+ssh "$DEPLOY_HOST" 'journalctl --user -u alaz -f'
 ```
 
 ---

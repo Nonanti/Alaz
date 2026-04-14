@@ -86,6 +86,8 @@ pub(crate) struct ExtractedEpisode {
     pub when_cues: Vec<String>,
     #[serde(default, deserialize_with = "flexible_string_vec")]
     pub why_cues: Vec<String>,
+    #[serde(default, deserialize_with = "flexible_string_vec")]
+    pub related_files: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -121,16 +123,16 @@ const CODING_EXTRACTION_PROMPT: &str = r#"You are a knowledge extraction assista
 Return ONLY valid JSON with this schema:
 {
   "patterns": [{"title": "...", "content": "...", "language": "...", "tags": ["..."]}],
-  "episodes": [{"title": "...", "content": "...", "type": "error|decision|success|discovery", "severity": "low|medium|high", "who_cues": [], "what_cues": [], "where_cues": [], "when_cues": [], "why_cues": []}],
+  "episodes": [{"title": "...", "content": "...", "type": "error|decision|success|discovery", "severity": "low|medium|high", "who_cues": [], "what_cues": [], "where_cues": [], "when_cues": [], "why_cues": [], "related_files": ["path/to/file.ts", ...]}],
   "procedures": [{"title": "...", "content": "...", "steps": []}],
   "core_memories": [{"category": "preference|fact|convention|constraint", "key": "...", "value": "..."}]
 }
 
 Rules:
-- Extract at most 5 patterns (reusable code snippets, architectural decisions, design patterns)
-- Extract at most 3 episodes (notable events with 5W context cues)
-- Extract at most 2 procedures (step-by-step workflows that were followed)
-- Extract at most 3 core memories (user preferences, project facts, coding conventions, constraints)
+- Extract at most 3 patterns (reusable code snippets, architectural decisions, design patterns)
+- Extract at most 2 episodes (notable events with 5W context cues)
+- Extract at most 1 procedure (step-by-step workflows that were followed)
+- Extract at most 2 core memories (user preferences, project facts, coding conventions, constraints)
 - Be specific and actionable in titles and content
 - Only extract genuinely useful knowledge, not trivial observations
 - If there is nothing worth extracting, return empty arrays
@@ -148,23 +150,25 @@ Episode title rules:
 - Start with a verb: "Fixed ...", "Discovered ...", "Decided ...", "Resolved ..."
 - Be specific about WHAT happened, not generic descriptions
 - Example good: "Fixed tokio::join! borrow error with pre-bound variables"
-- Example bad: "Implementation of health check" or "Health Check Endpoint Implementation""#;
+- Example bad: "Implementation of health check" or "Health Check Endpoint Implementation"
+
+For related_files: list any file paths mentioned in the transcript that relate to this episode. Use exact paths as they appear. Leave empty if no files are mentioned."#;
 
 const PERSONAL_EXTRACTION_PROMPT: &str = r#"You are a personal knowledge extraction assistant. Analyze the following content and extract structured knowledge about the user's life, plans, and experiences.
 
 Return ONLY valid JSON with this schema:
 {
   "patterns": [{"title": "...", "content": "...", "language": null, "tags": ["..."]}],
-  "episodes": [{"title": "...", "content": "...", "type": "experience|insight|conversation|milestone|observation|recommendation|decision", "severity": "low|medium|high", "who_cues": [], "what_cues": [], "where_cues": [], "when_cues": [], "why_cues": []}],
+  "episodes": [{"title": "...", "content": "...", "type": "experience|insight|conversation|milestone|observation|recommendation|decision", "severity": "low|medium|high", "who_cues": [], "what_cues": [], "where_cues": [], "when_cues": [], "why_cues": [], "related_files": ["path/to/file", ...]}],
   "procedures": [{"title": "...", "content": "...", "steps": []}],
   "core_memories": [{"category": "preference|fact|convention|constraint", "key": "...", "value": "..."}]
 }
 
 Rules:
-- Extract at most 3 patterns (recurring habits, routines, preferences)
-- Extract at most 5 episodes (experiences, insights, conversations, milestones, observations, recommendations)
-- Extract at most 2 procedures (personal routines, workflows)
-- Extract at most 5 core memories (personal preferences, facts, life plans, constraints)
+- Extract at most 2 patterns (recurring habits, routines, preferences)
+- Extract at most 3 episodes (experiences, insights, conversations, milestones, observations, recommendations)
+- Extract at most 1 procedure (personal routines, workflows)
+- Extract at most 3 core memories (personal preferences, facts, life plans, constraints)
 - Focus on what matters to the user personally: plans, feelings, relationships, goals
 - Capture specific details: names, dates, places, contexts
 - If there is nothing worth extracting, return empty arrays
@@ -178,6 +182,8 @@ Episode types for personal content:
 - "recommendation" — A recommendation (restaurant, book, movie, etc.)
 - "decision" — An important personal decision
 
+For related_files: list any file paths mentioned in the transcript that relate to this episode. Use exact paths as they appear. Leave empty if no files are mentioned.
+
 Core memory key rules:
 - Use consistent snake_case keys (e.g., "favorite_restaurant", "partner_name", "daily_routine")
 - Keep keys short and canonical (max 3 words)"#;
@@ -187,19 +193,21 @@ const RESEARCH_EXTRACTION_PROMPT: &str = r#"You are a research knowledge extract
 Return ONLY valid JSON with this schema:
 {
   "patterns": [{"title": "...", "content": "...", "language": null, "tags": ["..."]}],
-  "episodes": [{"title": "...", "content": "...", "type": "discovery|insight|decision", "severity": "low|medium|high", "who_cues": [], "what_cues": [], "where_cues": [], "when_cues": [], "why_cues": []}],
+  "episodes": [{"title": "...", "content": "...", "type": "discovery|insight|decision", "severity": "low|medium|high", "who_cues": [], "what_cues": [], "where_cues": [], "when_cues": [], "why_cues": [], "related_files": ["path/to/file", ...]}],
   "procedures": [{"title": "...", "content": "...", "steps": []}],
   "core_memories": [{"category": "preference|fact|convention|constraint", "key": "...", "value": "..."}]
 }
 
 Rules:
-- Extract at most 5 patterns (key concepts, frameworks, theories, methodologies)
-- Extract at most 3 episodes (discoveries, insights, important findings)
-- Extract at most 2 procedures (research methods, study techniques)
-- Extract at most 3 core memories (research interests, key references, methodological preferences)
+- Extract at most 3 patterns (key concepts, frameworks, theories, methodologies)
+- Extract at most 2 episodes (discoveries, insights, important findings)
+- Extract at most 1 procedure (research methods, study techniques)
+- Extract at most 2 core memories (research interests, key references, methodological preferences)
 - Focus on capturing knowledge that can be reused or referenced later
 - Include source references where possible
 - If there is nothing worth extracting, return empty arrays
+
+For related_files: list any file paths mentioned in the transcript that relate to this episode. Use exact paths as they appear. Leave empty if no files are mentioned.
 
 Core memory key rules:
 - Use consistent snake_case keys (e.g., "research_topic", "key_author", "methodology")"#;
@@ -209,19 +217,21 @@ const GENERAL_EXTRACTION_PROMPT: &str = r#"You are a knowledge extraction assist
 Return ONLY valid JSON with this schema:
 {
   "patterns": [{"title": "...", "content": "...", "language": null, "tags": ["..."]}],
-  "episodes": [{"title": "...", "content": "...", "type": "experience|insight|observation|decision|discovery|recommendation", "severity": "low|medium|high", "who_cues": [], "what_cues": [], "where_cues": [], "when_cues": [], "why_cues": []}],
+  "episodes": [{"title": "...", "content": "...", "type": "experience|insight|observation|decision|discovery|recommendation", "severity": "low|medium|high", "who_cues": [], "what_cues": [], "where_cues": [], "when_cues": [], "why_cues": [], "related_files": ["path/to/file", ...]}],
   "procedures": [{"title": "...", "content": "...", "steps": []}],
   "core_memories": [{"category": "preference|fact|convention|constraint", "key": "...", "value": "..."}]
 }
 
 Rules:
-- Extract at most 5 patterns (reusable knowledge, recurring themes)
-- Extract at most 3 episodes (notable events, insights, observations)
-- Extract at most 2 procedures (step-by-step processes)
-- Extract at most 3 core memories (preferences, facts, conventions)
+- Extract at most 3 patterns (reusable knowledge, recurring themes)
+- Extract at most 2 episodes (notable events, insights, observations)
+- Extract at most 1 procedure (step-by-step processes)
+- Extract at most 2 core memories (preferences, facts, conventions)
 - Be specific and actionable in titles and content
 - Only extract genuinely useful knowledge, not trivial observations
 - If there is nothing worth extracting, return empty arrays
+
+For related_files: list any file paths mentioned in the transcript that relate to this episode. Use exact paths as they appear. Leave empty if no files are mentioned.
 
 Core memory key rules:
 - Use consistent snake_case keys
@@ -294,6 +304,12 @@ impl super::SessionLearner {
                 }
             }
         }
+
+        // Enforce programmatic caps to guard against over-producing LLMs
+        aggregated.patterns.truncate(8);
+        aggregated.episodes.truncate(8);
+        aggregated.procedures.truncate(4);
+        aggregated.core_memories.truncate(8);
 
         aggregated
     }

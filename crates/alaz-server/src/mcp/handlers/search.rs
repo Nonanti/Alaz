@@ -165,3 +165,94 @@ pub(crate) async fn optimize_context(
 
     serde_json::to_string_pretty(&result).map_err(|e| format!("json error: {e}"))
 }
+
+pub(crate) async fn agentic_search(
+    state: &AppState,
+    params: AgenticSearchParams,
+) -> Result<String, String> {
+    let project = resolve_project(&state.pool, params.project.as_deref()).await;
+    let limit = params.limit.unwrap_or(10);
+
+    let results = alaz_search::agentic::agentic_search(
+        &state.search,
+        &state.llm,
+        &params.query,
+        project.as_deref(),
+        limit,
+    )
+    .await
+    .map_err(|e| format!("agentic search failed: {e}"))?;
+
+    if results.is_empty() {
+        return Ok(format!(
+            "No results found for \"{}\" after multi-hop search",
+            params.query
+        ));
+    }
+
+    let mut output = format!(
+        "## Agentic Search: \"{}\" ({} results)\n\n",
+        params.query,
+        results.len()
+    );
+    for (i, r) in results.iter().enumerate() {
+        let snippet = truncate_content(&r.content, 300);
+        output.push_str(&format!(
+            "{}. **{}** ({}, score: {:.3})\n   {}\n\n",
+            i + 1,
+            r.title,
+            r.entity_type,
+            r.score,
+            snippet
+        ));
+    }
+    Ok(output)
+}
+
+pub(crate) async fn rag_fusion(
+    state: &AppState,
+    params: RagFusionSearchParams,
+) -> Result<String, String> {
+    let project = resolve_project(&state.pool, params.project.as_deref()).await;
+    let limit = params.limit.unwrap_or(10);
+
+    let query = alaz_core::traits::SearchQuery {
+        query: params.query.clone(),
+        project,
+        limit: Some(limit),
+        rerank: Some(true),
+        hyde: Some(false),
+        graph_expand: Some(true),
+    };
+
+    let results = state
+        .search
+        .rag_fusion_search(&query, &state.llm)
+        .await
+        .map_err(|e| format!("RAG fusion search failed: {e}"))?;
+
+    if results.is_empty() {
+        return Ok(format!(
+            "No results found for \"{}\" via RAG fusion",
+            params.query
+        ));
+    }
+
+    let mut output = format!(
+        "## RAG Fusion Search: \"{}\" ({} results)\n\n",
+        params.query,
+        results.len()
+    );
+    for (i, r) in results.iter().enumerate() {
+        let snippet = truncate_content(&r.content, 300);
+        output.push_str(&format!(
+            "{}. **{}** ({}, score: {:.3})\n   {}\n\n",
+            i + 1,
+            r.title,
+            r.entity_type,
+            r.score,
+            snippet
+        ));
+    }
+    Ok(output)
+}

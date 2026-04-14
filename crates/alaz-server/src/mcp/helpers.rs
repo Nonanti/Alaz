@@ -1,6 +1,11 @@
 use alaz_db::repos::*;
 use tracing::warn;
 
+/// Retrieve the default owner ID (first owner in the database).
+///
+/// SECURITY NOTE: This always returns the first-created owner regardless of which
+/// API key authenticated the MCP request. This is intentional for single-owner
+/// deployment but would need per-API-key owner resolution for multi-tenant use.
 pub(crate) async fn default_owner_id(pool: &sqlx::PgPool) -> Result<String, String> {
     OwnerRepo::list(pool)
         .await

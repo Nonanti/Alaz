@@ -225,3 +225,30 @@ pub(crate) async fn similar(state: &AppState, params: SimilarParams) -> Result<S
     }
     serde_json::to_string_pretty(&results).map_err(|e| format!("json error: {e}"))
 }
+
+pub(crate) async fn record_usage(
+    state: &AppState,
+    params: RecordUsageParams,
+) -> Result<String, String> {
+    if !["success", "failure", "partial"].contains(&params.outcome.as_str()) {
+        return Err("outcome must be 'success', 'failure', or 'partial'".into());
+    }
+
+    KnowledgeRepo::record_usage_with_outcome(
+        &state.pool,
+        &params.id,
+        &params.outcome,
+        params.context.as_deref(),
+    )
+    .await
+    .map_err(|e| format!("record usage failed: {e}"))?;
+
+    let item = KnowledgeRepo::get_readonly(&state.pool, &params.id)
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?;
+
+    Ok(format!(
+        "Recorded {} for \"{}\"\nUsage: {}/{} | Utility: {:.2}",
+        params.outcome, item.title, item.times_success, item.times_used, item.utility_score
+    ))
+}

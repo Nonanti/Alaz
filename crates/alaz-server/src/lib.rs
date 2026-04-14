@@ -1,6 +1,7 @@
 pub mod api;
 pub mod error;
 pub mod jobs;
+pub mod log_capture;
 pub mod mcp;
 pub mod metrics;
 pub mod middleware;

@@ -1,7 +1,7 @@
 //! Full-text search signal.
 //!
 //! Searches knowledge_items, episodes, and procedures via their tsvector columns
-//! using `websearch_to_tsquery('simple', $1)`.
+//! using `websearch_to_tsquery('english', $1)`.
 
 use alaz_core::Result;
 use alaz_core::traits::SignalResult;
@@ -23,9 +23,9 @@ pub async fn execute(
         r#"
         (
             SELECT 'knowledge_item'::TEXT AS entity_type, id,
-                   ts_rank(search_vector, websearch_to_tsquery('simple', $1))::REAL AS rank
+                   ts_rank(search_vector, websearch_to_tsquery('english', $1))::REAL AS rank
             FROM knowledge_items
-            WHERE search_vector @@ websearch_to_tsquery('simple', $1)
+            WHERE search_vector @@ websearch_to_tsquery('english', $1)
               AND ($2::TEXT IS NULL OR project_id = $2)
             ORDER BY rank DESC
             LIMIT $3
@@ -33,9 +33,9 @@ pub async fn execute(
         UNION ALL
         (
             SELECT 'episode'::TEXT AS entity_type, id,
-                   ts_rank(search_vector, websearch_to_tsquery('simple', $1))::REAL AS rank
+                   ts_rank(search_vector, websearch_to_tsquery('english', $1))::REAL AS rank
             FROM episodes
-            WHERE search_vector @@ websearch_to_tsquery('simple', $1)
+            WHERE search_vector @@ websearch_to_tsquery('english', $1)
               AND ($2::TEXT IS NULL OR project_id = $2)
             ORDER BY rank DESC
             LIMIT $3
@@ -43,9 +43,9 @@ pub async fn execute(
         UNION ALL
         (
             SELECT 'procedure'::TEXT AS entity_type, id,
-                   ts_rank(search_vector, websearch_to_tsquery('simple', $1))::REAL AS rank
+                   ts_rank(search_vector, websearch_to_tsquery('english', $1))::REAL AS rank
             FROM procedures
-            WHERE search_vector @@ websearch_to_tsquery('simple', $1)
+            WHERE search_vector @@ websearch_to_tsquery('english', $1)
               AND ($2::TEXT IS NULL OR project_id = $2)
             ORDER BY rank DESC
             LIMIT $3

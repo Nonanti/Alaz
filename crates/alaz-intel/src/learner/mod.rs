@@ -1,4 +1,5 @@
 mod dedup;
+mod entities;
 mod extraction;
 mod outcomes;
 mod persist;
@@ -40,6 +41,8 @@ pub struct LearningSummary {
     pub duplicates_skipped: usize,
     pub promotions: usize,
     pub outcomes_recorded: usize,
+    pub entities_extracted: usize,
+    pub errors: Vec<String>,
 }
 
 impl SessionLearner {
@@ -100,6 +103,10 @@ impl SessionLearner {
                 .await
                 .unwrap_or_else(|e| {
                     warn!(error = %e, "procedure outcome detection failed");
+                    save_result
+                        .summary
+                        .errors
+                        .push(format!("outcome detection: {e}"));
                     0
                 })
         } else {
@@ -110,6 +117,10 @@ impl SessionLearner {
         save_result.summary.procedures_saved += self
             .save_tool_sequences(transcript, project_id, &mut save_result.session_dedup)
             .await;
+
+        // Entity extraction: extract named entities from the full transcript and save as graph edges
+        save_result.summary.entities_extracted =
+            self.extract_entities(session_id, transcript).await;
 
         // Generate session reflection with real extracted content
         self.generate_and_save_reflection(
@@ -155,6 +166,7 @@ impl SessionLearner {
             contradictions = summary.contradictions_resolved,
             promotions = summary.promotions,
             outcomes = summary.outcomes_recorded,
+            entities = summary.entities_extracted,
             duration_ms = duration.as_millis() as u64,
             "learning pipeline completed"
         );

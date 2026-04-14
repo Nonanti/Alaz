@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_is_private_url_private_ranges() {
-        assert!(is_private_url("http://192.168.0.1/admin"));
+        assert!(is_private_url("http://192.168.1.1/admin"));
         assert!(is_private_url("http://10.0.0.1/internal"));
         assert!(is_private_url("http://172.16.0.1/api"));
     }

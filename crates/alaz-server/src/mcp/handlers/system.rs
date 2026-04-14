@@ -392,3 +392,128 @@ pub(crate) async fn core_memory(
         .map_err(|e| format!("core memory failed: {e}"))?;
     serde_json::to_string_pretty(&memories).map_err(|e| format!("json error: {e}"))
 }
+
+// --- Observability MCP handlers ---
+
+pub(crate) async fn metrics(state: &AppState) -> Result<String, String> {
+    let m = &state.metrics;
+    let snap = m.snapshot();
+
+    Ok(format!(
+        "## System Metrics\n\n\
+        | Metric | Value |\n|---|---|\n\
+        | Uptime | {}h {}m |\n\
+        | Search requests | {} |\n\
+        | Search avg latency | {}ms |\n\
+        | Search max latency | {}ms |\n\
+        | LLM calls | {} |\n\
+        | LLM errors | {} |\n\
+        | Embeddings | {} |\n\
+        | Backfill processed | {} |\n\
+        | Decay pruned | {} |\n\
+        | Consolidation merged | {} |",
+        snap.uptime_seconds / 3600,
+        (snap.uptime_seconds % 3600) / 60,
+        snap.search_count,
+        snap.search_avg_latency_ms,
+        snap.search_max_latency_ms,
+        snap.llm_call_count,
+        snap.llm_error_count,
+        snap.embedding_count,
+        snap.backfill_processed,
+        snap.decay_pruned,
+        snap.consolidation_merged,
+    ))
+}
+
+pub(crate) async fn learning_analytics(
+    state: &AppState,
+    params: LearningAnalyticsParams,
+) -> Result<String, String> {
+    let limit = params.limit.unwrap_or(10);
+    let runs = LearningRunRepo::recent(&state.pool, limit)
+        .await
+        .map_err(|e| format!("learning analytics failed: {e}"))?;
+
+    if runs.is_empty() {
+        return Ok("No learning runs recorded yet.".into());
+    }
+
+    let mut output = format!("## Learning Analytics ({} recent runs)\n\n", runs.len());
+    output.push_str("| Date | Patterns | Episodes | Procedures | Memories | Dupes | Duration |\n");
+    output.push_str("|------|----------|----------|------------|----------|-------|----------|\n");
+
+    for run in &runs {
+        output.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | {}ms |\n",
+            run.created_at.format("%m-%d %H:%M"),
+            run.patterns_extracted,
+            run.episodes_extracted,
+            run.procedures_extracted,
+            run.memories_extracted,
+            run.duplicates_skipped,
+            run.duration_ms,
+        ));
+    }
+
+    Ok(output)
+}
+
+pub(crate) async fn search_analytics(
+    state: &AppState,
+    params: SearchAnalyticsParams,
+) -> Result<String, String> {
+    let days = params.days.unwrap_or(7);
+    let analytics = SearchQueryRepo::analytics(&state.pool, days)
+        .await
+        .map_err(|e| format!("search analytics failed: {e}"))?;
+
+    serde_json::to_string_pretty(&analytics).map_err(|e| format!("json error: {e}"))
+}
+
+// --- Project Health ---
+
+pub(crate) async fn project_health(
+    state: &AppState,
+    params: super::super::params::ProjectHealthParams,
+) -> Result<String, String> {
+    let project_id = resolve_project(&state.pool, params.project.as_deref()).await;
+
+    let report =
+        alaz_intel::health_score::compute_project_health(&state.pool, project_id.as_deref())
+            .await
+            .map_err(|e| format!("project health failed: {e}"))?;
+
+    let project_label = report.project_id.as_deref().unwrap_or("global");
+    let mut output = format!(
+        "## Project Health — {}\n**Overall Score**: {:.0}%\n\n",
+        project_label,
+        report.overall_score * 100.0,
+    );
+
+    output.push_str("### Dimensions\n");
+    output.push_str("| Dimension | Score | Status | Detail |\n");
+    output.push_str("|-----------|-------|--------|--------|\n");
+
+    for dim in &report.dimensions {
+        let bar_len = (dim.score * 10.0).round() as usize;
+        let bar = "█".repeat(bar_len);
+        output.push_str(&format!(
+            "| {} | {:.0}% {} | {} | {} |\n",
+            dim.name,
+            dim.score * 100.0,
+            bar,
+            dim.status,
+            dim.detail,
+        ));
+    }
+
+    if !report.recommendations.is_empty() {
+        output.push_str("\n### Recommendations\n");
+        for rec in &report.recommendations {
+            output.push_str(&format!("- {}\n", rec));
+        }
+    }
+
+    Ok(output)
+}

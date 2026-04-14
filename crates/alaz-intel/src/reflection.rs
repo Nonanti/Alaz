@@ -83,10 +83,18 @@ impl ReflectionGenerator {
             "generating session reflection"
         );
 
-        let reflection: ReflectionData = self
+        let mut reflection: ReflectionData = self
             .llm
             .chat_json(REFLECTION_SYSTEM_PROMPT, session_summary, 0.3)
             .await?;
+
+        // Clamp all scores to valid 0.0-1.0 range (LLM may produce out-of-range values)
+        reflection.effectiveness_score = reflection.effectiveness_score.clamp(0.0, 1.0);
+        reflection.complexity_score = reflection.complexity_score.clamp(0.0, 1.0);
+        reflection.overall_score = reflection.overall_score.clamp(0.0, 1.0);
+        reflection.knowledge_score = reflection.knowledge_score.clamp(0.0, 1.0);
+        reflection.decision_score = reflection.decision_score.clamp(0.0, 1.0);
+        reflection.efficiency_score = reflection.efficiency_score.clamp(0.0, 1.0);
 
         debug!(
             effectiveness = reflection.effectiveness_score,

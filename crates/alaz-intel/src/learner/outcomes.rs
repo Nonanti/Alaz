@@ -72,14 +72,22 @@ impl super::SessionLearner {
 
         let prompt = PROCEDURE_OUTCOME_PROMPT.replace("{procedures}", &proc_list);
 
-        // Use the tail of the transcript (~8K chars) — most relevant for outcomes
-        let char_count = transcript.chars().count();
-        let skip = char_count.saturating_sub(8000);
-        let transcript_tail: String = transcript.chars().skip(skip).collect();
+        // Use the tail of the transcript (~8K chars / ~32KB) — most relevant for outcomes
+        let byte_offset = transcript.len().saturating_sub(32000);
+        let start = if byte_offset == 0 {
+            0
+        } else {
+            let mut i = byte_offset;
+            while i < transcript.len() && !transcript.is_char_boundary(i) {
+                i += 1;
+            }
+            i
+        };
+        let transcript_tail = &transcript[start..];
 
         let result = match self
             .llm
-            .chat_json::<ProcedureOutcomeResult>(&prompt, &transcript_tail, 0.1)
+            .chat_json::<ProcedureOutcomeResult>(&prompt, transcript_tail, 0.1)
             .await
         {
             Ok(r) => r,

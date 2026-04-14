@@ -186,7 +186,13 @@ async fn proactive_context_handler(
 
     // Check rate limit and collect injected IDs — release lock before DB query
     let injected_ids = {
-        let sessions = state.sessions.lock().await;
+        let mut sessions = state.sessions.lock().await;
+
+        // Periodic cleanup: remove sessions idle for more than 10 minutes
+        if sessions.len() > 50 {
+            sessions.retain(|_, t| t.last_call.elapsed().as_secs() < 600);
+        }
+
         if let Some(tracker) = sessions.get(session_id.as_str()) {
             if tracker.last_call.elapsed().as_secs() < PROACTIVE_COOLDOWN_SECS {
                 return (StatusCode::OK, Json(ProactiveResponse { results: vec![] }))
@@ -255,11 +261,16 @@ async fn check_http_service(client: &reqwest::Client, url: &str) -> (bool, u64) 
     (up, ms)
 }
 
+/// Shared HTTP client for health checks — avoids creating a new client per request.
+static HEALTH_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
 async fn health_check(State(state): State<AppState>) -> axum::Json<Value> {
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(3))
-        .build()
-        .unwrap_or_default();
+    let http_client = HEALTH_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap_or_default()
+    });
 
     let config = &state.config;
 
@@ -290,9 +301,9 @@ async fn health_check(State(state): State<AppState>) -> axum::Json<Value> {
             let ms = start.elapsed().as_millis() as u64;
             (matches!(result, Ok(Ok(_))), ms)
         },
-        check_http_service(&http_client, &ollama_health_url),
-        check_http_service(&http_client, &tei_health_url),
-        check_http_service(&http_client, &colbert_health_url),
+        check_http_service(http_client, &ollama_health_url),
+        check_http_service(http_client, &tei_health_url),
+        check_http_service(http_client, &colbert_health_url),
     );
 
     // Determine overall status

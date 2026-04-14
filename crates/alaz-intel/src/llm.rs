@@ -68,18 +68,20 @@ struct OpenAIChoice {
 }
 
 impl LlmClient {
-    /// Create a new LLM client with default ZhipuAI base URL.
-    pub fn new(api_key: &str, model: &str) -> Self {
-        Self::with_base_url(api_key, model, "https://open.bigmodel.cn/api/paas/v4")
-    }
-
     /// Create a new LLM client with a custom base URL.
     ///
     /// Automatically detects Ollama endpoints (port 11434) and uses the
     /// native `/api/chat` endpoint with `think: false` for best performance.
     pub fn with_base_url(api_key: &str, model: &str, base_url: &str) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
-        let is_ollama = base.contains(":11434");
+        // Parse port from URL to detect Ollama (more robust than string contains)
+        let is_ollama = base
+            .split("://")
+            .nth(1)
+            .and_then(|host_path| host_path.split('/').next())
+            .and_then(|host_port| host_port.rsplit(':').next())
+            .and_then(|port| port.parse::<u16>().ok())
+            == Some(11434);
         Self {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
@@ -89,7 +91,7 @@ impl LlmClient {
             model: model.to_string(),
             base_url: base,
             is_ollama,
-            breaker: CircuitBreaker::new("llm", 5, 60),
+            breaker: CircuitBreaker::new("llm", 10, 60),
         }
     }
 
@@ -112,31 +114,21 @@ impl LlmClient {
 
         debug!(url = %url, model = %self.model, ollama = self.is_ollama, "sending chat request");
 
-        let response = match self
-            .client
-            .post(&url)
-            .bearer_auth(&self.api_key)
-            .body(body)
-            .header("content-type", "application/json")
-            .send()
-            .await
-        {
+        // Retry once with 3s backoff on transient failures
+        let response = match self.send_request(&url, &body).await {
             Ok(resp) => resp,
-            Err(e) => {
-                self.breaker.record_failure();
-                return Err(AlazError::Llm(format!("request failed: {e}")));
+            Err(_first_err) => {
+                debug!("LLM request failed, retrying in 3s...");
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                match self.send_request(&url, &body).await {
+                    Ok(resp) => resp,
+                    Err(e) => {
+                        self.breaker.record_failure();
+                        return Err(e);
+                    }
+                }
             }
         };
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            warn!(status = %status, body = %body, "LLM API returned error");
-            self.breaker.record_failure();
-            return Err(AlazError::Llm(format!(
-                "API returned status {status}: {body}"
-            )));
-        }
 
         let content = if self.is_ollama {
             let resp: OllamaChatResponse = response
@@ -159,6 +151,30 @@ impl LlmClient {
         self.breaker.record_success();
         debug!(response_len = content.len(), "received chat response");
         Ok(content)
+    }
+
+    /// Send a single HTTP request to the LLM endpoint.
+    async fn send_request(&self, url: &str, body: &str) -> Result<reqwest::Response> {
+        let response = self
+            .client
+            .post(url)
+            .bearer_auth(&self.api_key)
+            .body(body.to_string())
+            .header("content-type", "application/json")
+            .send()
+            .await
+            .map_err(|e| AlazError::Llm(format!("request failed: {e}")))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            warn!(status = %status, body = %body, "LLM API returned error");
+            return Err(AlazError::Llm(format!(
+                "API returned status {status}: {body}"
+            )));
+        }
+
+        Ok(response)
     }
 
     fn build_ollama_request(&self, system: &str, user: &str, temperature: f32) -> (String, String) {

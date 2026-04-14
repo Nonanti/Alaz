@@ -8,7 +8,9 @@ pub mod episode;
 pub mod git_activity;
 pub mod graph;
 pub mod knowledge;
+pub mod learning_queue;
 pub mod learning_run;
+pub mod observability;
 pub mod owner;
 pub mod procedure;
 pub mod project;
@@ -16,8 +18,10 @@ pub mod raptor;
 pub mod reflection;
 pub mod search_query;
 pub mod session;
+pub mod session_message;
 pub mod signal_weight;
 pub mod vault;
+pub mod work_unit;
 
 pub use apikey::ApiKeyRepo;
 pub use audit::AuditRepo;
@@ -29,13 +33,20 @@ pub use episode::EpisodeRepo;
 pub use git_activity::{FileChange, GitActivityRepo};
 pub use graph::GraphRepo;
 pub use knowledge::KnowledgeRepo;
+pub use learning_queue::{LearningQueueItem, LearningQueueRepo};
 pub use learning_run::{LearningAnalytics, LearningRun, LearningRunRepo};
+pub use observability::{
+    AlertHistoryEntry, AlertHistoryRepo, AlertRule, AlertRuleRepo, ErrorGroup, ErrorGroupRepo,
+    LogStats, NewLog, StructuredLog, StructuredLogRepo,
+};
 pub use owner::OwnerRepo;
 pub use procedure::ProcedureRepo;
 pub use project::ProjectRepo;
 pub use raptor::RaptorRepo;
 pub use reflection::{ReflectionRepo, ScoreTrend};
 pub use search_query::{SearchAnalytics, SearchQueryRepo, SearchQueryRow};
-pub use session::SessionRepo;
+pub use session::{SessionRepo, SessionSearchResult, SessionState};
+pub use session_message::{SessionMessageRepo, SessionMessageSearchResult};
 pub use signal_weight::{SignalWeightRepo, UpsertSignalWeight};
 pub use vault::VaultRepo;
+pub use work_unit::{WorkUnit, WorkUnitRepo};

@@ -8,8 +8,8 @@ use tracing::info;
 
 /// Check whether a knowledge item should be promoted to a global pattern.
 ///
-/// A pattern is promoted when similar items (by title, threshold 0.5) exist
-/// in 3 or more distinct projects. When promoted, a new global copy is created
+/// A pattern is promoted when similar items (by title, threshold 0.4) exist
+/// in 2 or more distinct projects. When promoted, a new global copy is created
 /// (with `project_id = NULL`) and `derived_from` edges are created from the
 /// global copy to each source item.
 ///
@@ -20,7 +20,7 @@ pub async fn check_and_promote(
     title: &str,
 ) -> Result<Option<String>> {
     // Find similar items across all projects (no project filter)
-    let similar = KnowledgeRepo::find_similar_by_title(pool, title, 0.5, None).await?;
+    let similar = KnowledgeRepo::find_similar_by_title(pool, title, 0.4, None).await?;
 
     // Collect distinct projects (only items that have a project)
     let projects: HashSet<&str> = similar
@@ -28,7 +28,7 @@ pub async fn check_and_promote(
         .filter_map(|item| item.project_id.as_deref())
         .collect();
 
-    if projects.len() < 3 {
+    if projects.len() < 2 {
         return Ok(None);
     }
 

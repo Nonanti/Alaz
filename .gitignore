@@ -1,10 +1,21 @@
 /target
 .env
+.env.local
+.env.*.local
 *.swp
 *.swo
 *.log
 .claude/
 .pi/
+.DS_Store
 __pycache__/
+*.pyc
 migrate-*.sql
 backups/
+# Secrets / private keys
+*.pem
+*.key
+*.crt
+# Editor / IDE
+.idea/
+.vscode/

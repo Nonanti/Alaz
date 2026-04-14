@@ -55,9 +55,9 @@ impl AppState {
         }
 
         let llm = Arc::new(LlmClient::with_base_url(
-            &config.zhipuai_api_key,
-            &config.zhipuai_model,
-            &config.zhipuai_base_url,
+            &config.llm_api_key,
+            &config.llm_model,
+            &config.llm_base_url,
         ));
         let embedding = Arc::new(EmbeddingService::new(
             &config.ollama_url,
