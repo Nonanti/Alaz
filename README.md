@@ -355,9 +355,9 @@ Circuit breaker: 5 consecutive failures → 60s backoff per service.
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama embedding service |
 | `TEI_URL` | `http://localhost:8001` | TEI reranker endpoint |
 | `COLBERT_URL` | `http://localhost:8002` | ColBERT server endpoint |
-| `ZHIPUAI_API_KEY` | *(required for learning)* | LLM API key (OpenAI-compatible) |
-| `ZHIPUAI_BASE_URL` | `https://open.bigmodel.cn/api/paas/v4` | LLM base URL |
-| `ZHIPUAI_MODEL` | `glm-4.7` | LLM model name |
+| `LLM_API_KEY` | *(required for learning)* | API key for any OpenAI-compatible LLM endpoint |
+| `LLM_BASE_URL` | `http://localhost:11434/v1` | LLM base URL — Ollama, Z.AI, OpenAI, vLLM, LM Studio, … |
+| `LLM_MODEL` | `qwen3:8b` | LLM model name |
 | `TEXT_EMBED_MODEL` | `qwen3-embedding:8b` | Ollama embedding model |
 | `TEXT_EMBED_DIM` | `4096` | Embedding dimension |
 | `JWT_SECRET` | *(required)* | JWT signing secret |
